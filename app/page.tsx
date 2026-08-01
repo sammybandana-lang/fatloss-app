@@ -28,7 +28,7 @@ export default async function HomePage() {
   return (
     <main className="mx-auto flex min-h-screen max-w-md flex-col gap-8 px-6 py-12">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Your weight log</h1>
+        <h1 className="text-2xl font-semibold">Your weight log V2</h1>
         <form action={logout}>
           <button type="submit" className="text-sm text-zinc-500 underline">
             Log out
