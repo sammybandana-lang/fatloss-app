@@ -1,0 +1,22 @@
+# CODEOWNERS — sensitive paths require review from the reviewer account
+# before a PR touching them can merge into a protected branch.
+# Syntax: <path pattern>  <owner>
+# Later matching rules override earlier ones for the same file.
+
+# Auth surface: login/signup/logout server actions and page
+/app/login/           @samrao1208-Reviewer
+
+# Data-write server action (insert into measurements; relies on RLS + validation)
+/app/actions.ts       @samrao1208-Reviewer
+
+# Auth middleware/proxy: refreshes the session on every request
+/proxy.ts             @samrao1208-Reviewer
+
+# Supabase client setup (server/client/session handling)
+/lib/supabase/        @samrao1208-Reviewer
+
+# Database: schema, RLS policies, CHECK constraints, migrations
+/supabase/            @samrao1208-Reviewer
+
+# The pipeline itself: CI workflow and this ownership file
+/.github/             @samrao1208-Reviewer
