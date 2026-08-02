@@ -18,7 +18,9 @@ export default async function HomePage() {
 
   const { data: measurements, error } = await supabase
     .from("measurements")
-    .select("id, weight_lbs, created_at")
+    .select(
+      "id, weight_lbs, body_fat_pct, waist_in, hips_in, neck_in, created_at",
+    )
     .order("created_at", { ascending: false });
 
   if (error) {
@@ -36,8 +38,11 @@ export default async function HomePage() {
         </form>
       </div>
 
-      <form action={addMeasurement} className="flex items-end gap-3">
-        <label className="flex flex-1 flex-col gap-1 text-sm">
+      <form
+        action={addMeasurement}
+        className="flex flex-col gap-3 rounded border border-zinc-200 p-4"
+      >
+        <label className="flex flex-col gap-1 text-sm">
           Weight (lbs)
           <input
             name="weight_lbs"
@@ -48,6 +53,50 @@ export default async function HomePage() {
             className="rounded border border-zinc-300 px-3 py-2"
           />
         </label>
+
+        <div className="grid grid-cols-2 gap-3">
+          <label className="flex flex-col gap-1 text-sm">
+            Body fat %
+            <input
+              name="body_fat_pct"
+              type="number"
+              step="0.1"
+              min="0"
+              className="rounded border border-zinc-300 px-3 py-2"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            Waist (in)
+            <input
+              name="waist_in"
+              type="number"
+              step="0.1"
+              min="0"
+              className="rounded border border-zinc-300 px-3 py-2"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            Hips (in)
+            <input
+              name="hips_in"
+              type="number"
+              step="0.1"
+              min="0"
+              className="rounded border border-zinc-300 px-3 py-2"
+            />
+          </label>
+          <label className="flex flex-col gap-1 text-sm">
+            Neck (in)
+            <input
+              name="neck_in"
+              type="number"
+              step="0.1"
+              min="0"
+              className="rounded border border-zinc-300 px-3 py-2"
+            />
+          </label>
+        </div>
+
         <button
           type="submit"
           className="rounded bg-black px-4 py-2 text-sm font-medium text-white"
@@ -61,12 +110,35 @@ export default async function HomePage() {
           measurements.map((measurement) => (
             <li
               key={measurement.id}
-              className="flex justify-between rounded border border-zinc-200 px-3 py-2 text-sm"
+              className="flex flex-col gap-1 rounded border border-zinc-200 px-3 py-2 text-sm"
             >
-              <span>{measurement.weight_lbs} lbs</span>
-              <span className="text-zinc-500">
-                {new Date(measurement.created_at).toLocaleDateString()}
-              </span>
+              <div className="flex justify-between">
+                <span className="font-medium">
+                  {measurement.weight_lbs} lbs
+                </span>
+                <span className="text-zinc-500">
+                  {new Date(measurement.created_at).toLocaleDateString()}
+                </span>
+              </div>
+              {(measurement.body_fat_pct !== null ||
+                measurement.waist_in !== null ||
+                measurement.hips_in !== null ||
+                measurement.neck_in !== null) && (
+                <div className="flex flex-wrap gap-x-3 text-xs text-zinc-500">
+                  {measurement.body_fat_pct !== null && (
+                    <span>Body fat: {measurement.body_fat_pct}%</span>
+                  )}
+                  {measurement.waist_in !== null && (
+                    <span>Waist: {measurement.waist_in} in</span>
+                  )}
+                  {measurement.hips_in !== null && (
+                    <span>Hips: {measurement.hips_in} in</span>
+                  )}
+                  {measurement.neck_in !== null && (
+                    <span>Neck: {measurement.neck_in} in</span>
+                  )}
+                </div>
+              )}
             </li>
           ))
         ) : (
