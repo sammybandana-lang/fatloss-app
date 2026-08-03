@@ -1,8 +1,21 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import { getLatestWorkout } from "@/lib/hevy/queries";
+import { kgToLbs } from "@/lib/units";
 import { addMeasurement } from "./actions";
 import { logout } from "./login/actions";
 import { HevySyncButton } from "./hevy-sync-button";
+
+function formatSet(set: { reps: number | null; weight_kg: number | null }): string {
+  const parts: string[] = [];
+  if (set.reps !== null) {
+    parts.push(`${set.reps} reps`);
+  }
+  if (set.weight_kg !== null) {
+    parts.push(`${kgToLbs(set.weight_kg)} lbs`);
+  }
+  return parts.length > 0 ? parts.join(" · ") : "No data logged";
+}
 
 export default async function HomePage() {
   const supabase = await createClient();
@@ -28,10 +41,12 @@ export default async function HomePage() {
     throw new Error(error.message);
   }
 
+  const latestWorkout = await getLatestWorkout(supabase);
+
   return (
     <main className="mx-auto flex min-h-screen max-w-md flex-col gap-8 px-6 py-12">
       <div className="flex items-start justify-between">
-        <h1 className="text-2xl font-semibold">Your weight log V2</h1>
+        <h1 className="text-2xl font-semibold">Dashboard</h1>
         <div className="flex flex-col items-end gap-2">
           <HevySyncButton />
           <form action={logout}>
@@ -149,6 +164,34 @@ export default async function HomePage() {
           <p className="text-sm text-zinc-500">No measurements yet.</p>
         )}
       </ul>
+
+      <section className="flex flex-col gap-3">
+        <h2 className="text-lg font-semibold">Latest Hevy workout</h2>
+        {latestWorkout ? (
+          <div className="flex flex-col gap-3 rounded border border-zinc-200 px-3 py-2 text-sm">
+            <div className="flex justify-between">
+              <span className="font-medium">{latestWorkout.title}</span>
+              <span className="text-zinc-500">
+                {latestWorkout.start_time
+                  ? new Date(latestWorkout.start_time).toLocaleDateString()
+                  : "—"}
+              </span>
+            </div>
+            {latestWorkout.exercises.map((exercise) => (
+              <div key={exercise.id} className="flex flex-col gap-1">
+                <span className="font-medium">{exercise.title}</span>
+                <ul className="flex flex-col gap-0.5 pl-3 text-xs text-zinc-500">
+                  {exercise.sets.map((set) => (
+                    <li key={set.set_index}>{formatSet(set)}</li>
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="text-sm text-zinc-500">No workouts synced yet.</p>
+        )}
+      </section>
     </main>
   );
 }
