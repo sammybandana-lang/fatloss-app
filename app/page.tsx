@@ -2,6 +2,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { addMeasurement } from "./actions";
 import { logout } from "./login/actions";
+import { HevySyncButton } from "./hevy-sync-button";
 
 export default async function HomePage() {
   const supabase = await createClient();
@@ -29,13 +30,16 @@ export default async function HomePage() {
 
   return (
     <main className="mx-auto flex min-h-screen max-w-md flex-col gap-8 px-6 py-12">
-      <div className="flex items-center justify-between">
+      <div className="flex items-start justify-between">
         <h1 className="text-2xl font-semibold">Your weight log V2</h1>
-        <form action={logout}>
-          <button type="submit" className="text-sm text-zinc-500 underline">
-            Log out
-          </button>
-        </form>
+        <div className="flex flex-col items-end gap-2">
+          <HevySyncButton />
+          <form action={logout}>
+            <button type="submit" className="text-sm text-zinc-500 underline">
+              Log out
+            </button>
+          </form>
+        </div>
       </div>
 
       <form
