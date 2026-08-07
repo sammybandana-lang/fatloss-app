@@ -81,6 +81,16 @@ describe("getMostRecentLoseItCsv", () => {
     expect(mockAttachmentsGet).not.toHaveBeenCalled();
   });
 
+  it("searches with a newer_than:1d filter so only today's email is considered", async () => {
+    mockList.mockResolvedValue({ data: { messages: [] } });
+
+    await getMostRecentLoseItCsv();
+
+    expect(mockList).toHaveBeenCalledWith(
+      expect.objectContaining({ q: expect.stringContaining("newer_than:1d") }),
+    );
+  });
+
   it("throws when no .csv attachment is present", async () => {
     mockList.mockResolvedValue({ data: { messages: [{ id: "msg-1" }] } });
     mockGet.mockResolvedValue({
