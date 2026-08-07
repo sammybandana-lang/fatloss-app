@@ -109,6 +109,16 @@ function isDeleted(value: string | undefined): boolean {
   return (value ?? "").trim() !== "0";
 }
 
+/**
+ * LoseIt's daily export mixes food rows with exercise rows (e.g. "Steps
+ * Calorie Bonus"). Exercise rows only carry the first 8 columns — LoseIt
+ * omits the macro columns entirely since they don't apply — so they must be
+ * dropped before the remaining rows are held to the full 16-column shape.
+ */
+function isExerciseType(value: string | undefined): boolean {
+  return (value ?? "").trim().toLowerCase() === "exercise";
+}
+
 function mapRow(raw: LoseItRow, rowNumber: number): DietEntryRow {
   return {
     entry_date: parseEntryDate(raw.Date, rowNumber),
@@ -134,7 +144,10 @@ function mapRow(raw: LoseItRow, rowNumber: number): DietEntryRow {
 
 /**
  * Parses raw LoseIt daily-report CSV text into rows ready to insert into
- * `diet_entries`. Rows marked `Deleted != 0` are skipped. `user_id` is
+ * `diet_entries`. Rows marked `Deleted != 0` and exercise rows (`Type ==
+ * "Exercise"`) are dropped first — exercise rows are short a column count
+ * by design, not by corruption, so they must not trip the strict
+ * field-count check meant to catch actually malformed data. `user_id` is
  * never set here — the database fills it in and Row-Level Security scopes
  * it, same as every other table in this app.
  */
@@ -144,19 +157,33 @@ export function parseLoseItCsv(csvText: string): DietEntryRow[] {
     skipEmptyLines: true,
   });
 
-  if (result.errors.length > 0) {
-    const [first] = result.errors;
-    throw new Error(`Failed to parse CSV: ${first.message} (row ${first.row ?? "?"}).`);
-  }
-
   assertValidHeaders(result.meta.fields);
+
+  // Papa reports field-count mismatches (e.g. a short exercise row) as
+  // per-row errors, keyed by the row's index into `result.data`. Only rows
+  // that survive the Deleted/Exercise filters below need to pass this check.
+  const errorByRowIndex = new Map(
+    result.errors
+      .filter((error) => error.row !== undefined)
+      .map((error) => [error.row as number, error]),
+  );
 
   const rows: DietEntryRow[] = [];
   result.data.forEach((raw, index) => {
     const rowNumber = index + 2; // +1 for the header row, +1 for 1-indexing
+
     if (isDeleted(raw.Deleted)) {
       return;
     }
+    if (isExerciseType(raw.Type)) {
+      return;
+    }
+
+    const rowError = errorByRowIndex.get(index);
+    if (rowError) {
+      throw new Error(`Failed to parse CSV: ${rowError.message} (row ${rowNumber}).`);
+    }
+
     rows.push(mapRow(raw, rowNumber));
   });
 
