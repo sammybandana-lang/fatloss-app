@@ -1,12 +1,12 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getLatestWorkout } from "@/lib/hevy/queries";
-import { getTodaysDietTotals } from "@/lib/loseit/queries";
+import { getLatestDayDietTotals } from "@/lib/loseit/queries";
 import { kgToLbs } from "@/lib/units";
 import { addMeasurement } from "./actions";
 import { logout } from "./login/actions";
 import { HevySyncButton } from "./hevy-sync-button";
-import { DietTodayCard } from "@/app/DietTodayCard";
+import { DietLatestDayCard } from "@/app/DietLatestDayCard";
 
 function formatSet(set: { reps: number | null; weight_kg: number | null }): string {
   const parts: string[] = [];
@@ -44,7 +44,7 @@ export default async function HomePage() {
   }
 
   const latestWorkout = await getLatestWorkout(supabase);
-  const initialTotals = await getTodaysDietTotals();
+  const initialTotals = await getLatestDayDietTotals(supabase);
 
   return (
     <main className="mx-auto flex min-h-screen max-w-md flex-col gap-8 px-6 py-12">
@@ -196,7 +196,7 @@ export default async function HomePage() {
         )}
       </section>
 
-      <DietTodayCard initialTotals={initialTotals} />
+      <DietLatestDayCard initialTotals={initialTotals} />
     </main>
   );
 }
