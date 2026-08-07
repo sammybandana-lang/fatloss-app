@@ -13,7 +13,7 @@ import { OAuth2Client } from "google-auth-library";
 import { gmail_v1 } from "googleapis";
 
 const LOSEIT_SENDER = "donotreply@loseit.com";
-const SEARCH_QUERY = `from:${LOSEIT_SENDER} has:attachment`;
+const SEARCH_QUERY = `from:${LOSEIT_SENDER} has:attachment newer_than:1d`;
 
 interface GmailEnv {
   refreshToken: string;
