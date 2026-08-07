@@ -3,6 +3,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { getMostRecentLoseItCsv } from "@/lib/gmail/client";
 import { parseLoseItCsv } from "@/lib/loseit/parser";
+import { getTodaysDietTotals, type TodayTotals } from "@/lib/loseit/queries";
 
 // Matches the `unique (user_id, entry_date, name, food_type, calories)`
 // constraint in supabase/migrations/20260803192711_create_diet_entries.sql.
@@ -68,4 +69,13 @@ export async function importLoseItToday(): Promise<ImportResult> {
   } catch (err) {
     return { ok: false, error: err instanceof Error ? err.message : "Unknown error" };
   }
+}
+
+/**
+ * Thin server action wrapper so the client component can re-fetch today's
+ * totals after an import — client components can't call server-only query
+ * functions directly, only server actions.
+ */
+export async function getTodaysDietTotalsAction(): Promise<TodayTotals | null> {
+  return getTodaysDietTotals();
 }

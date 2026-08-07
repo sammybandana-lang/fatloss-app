@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import fs from "fs";
+import path from "path";
 import { importLoseItToday } from "@/app/loseit-actions";
 import { getMostRecentLoseItCsv } from "@/lib/gmail/client";
 import { parseLoseItCsv, type DietEntryRow } from "@/lib/loseit/parser";
@@ -148,5 +150,42 @@ describe("importLoseItToday", () => {
     const result = await importLoseItToday();
 
     expect(result).toEqual({ ok: false, error: "connection to database failed" });
+  });
+
+  it("processes real LoseIt CSV end-to-end", async () => {
+    // Unlike every other test in this file, use the real parser against the
+    // real fixture bytes — this is the point of the test: proving the whole
+    // pipeline (CSV -> parser -> upsert) handles real LoseIt quirks like
+    // quoted commas in names and a mix of food/exercise rows.
+    const actualParser = await vi.importActual<typeof import("@/lib/loseit/parser")>(
+      "@/lib/loseit/parser",
+    );
+    vi.mocked(parseLoseItCsv).mockImplementation(actualParser.parseLoseItCsv);
+
+    const fixtureCsv = fs.readFileSync(
+      path.join(__dirname, "fixtures", "loseit-sample-full-day.csv"),
+      "utf-8",
+    );
+    vi.mocked(getMostRecentLoseItCsv).mockResolvedValue(fixtureCsv);
+
+    mockGetUser.mockResolvedValue({ data: { user: { id: "test-user-123" } } });
+    mockSelect.mockResolvedValue({
+      data: Array.from({ length: 6 }, (_, i) => ({ id: `row-${i}` })),
+      error: null,
+    });
+
+    const result = await importLoseItToday();
+
+    expect(result).toEqual({ ok: true, inserted: 6, skipped_dupes: 0 });
+    expect(mockUpsert).toHaveBeenCalledTimes(1);
+
+    type UpsertedRow = DietEntryRow & { user_id: string };
+    const [insertedRows] = mockUpsert.mock.calls[0] as unknown as [UpsertedRow[], unknown];
+    expect(insertedRows).toHaveLength(6);
+    expect(insertedRows.every((row) => row.user_id === "test-user-123")).toBe(true);
+    expect(insertedRows[0].name).toBe("Ragi Millet Dosa Batter");
+    expect(insertedRows[5].name).toBe("Egg Whites, Uncooked, Large Egg");
+    expect(insertedRows[3].protein_g).toBe(12);
+    expect(insertedRows[3].carbs_g).toBe(18);
   });
 });

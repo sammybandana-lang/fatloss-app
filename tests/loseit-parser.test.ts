@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
+import fs from "fs";
+import path from "path";
 import { parseLoseItCsv } from "../lib/loseit/parser";
+
+function readFixture(name: string): string {
+  return fs.readFileSync(path.join(__dirname, "fixtures", name), "utf-8");
+}
 
 const HEADER =
   "Date,Name,Icon,Type,Quantity,Units,Calories,Deleted,Fat (g),Protein (g),Carbohydrates (g),Saturated Fat (g),Sugars (g),Fiber (g),Cholesterol (mg),Sodium (mg)";
@@ -103,5 +109,40 @@ describe("parseLoseItCsv", () => {
     ].join("\n");
 
     expect(() => parseLoseItCsv(csv)).toThrow();
+  });
+
+  it("skips exercise rows entirely, even though they're short several columns (real LoseIt export)", () => {
+    const csv = readFixture("loseit-sample-quiet-day.csv");
+
+    const rows = parseLoseItCsv(csv);
+
+    expect(rows).toHaveLength(0);
+  });
+
+  it("parses a real full-day LoseIt export: exercise row dropped, quoted commas preserved", () => {
+    const csv = readFixture("loseit-sample-full-day.csv");
+
+    const rows = parseLoseItCsv(csv);
+
+    expect(rows).toHaveLength(6);
+    expect(rows.map((row) => row.name)).toEqual([
+      "Ragi Millet Dosa Batter",
+      "Chicken Breast BASIC",
+      "Lite And Fit Greek Blueberry Yogart",
+      "Kind Bar",
+      "Bread, 21 Whole Grains And Seeds",
+      "Egg Whites, Uncooked, Large Egg",
+    ]);
+    expect(rows.every((row) => row.entry_date === "2026-08-01")).toBe(true);
+
+    const kindBar = rows[3];
+    expect(kindBar.calories).toBe(240);
+    expect(kindBar.fat_g).toBe(17);
+    expect(kindBar.protein_g).toBe(12);
+    expect(kindBar.carbs_g).toBe(18);
+
+    const chickenBreast = rows[1];
+    expect(chickenBreast.calories).toBe(249);
+    expect(chickenBreast.saturated_fat_g).toBeNull();
   });
 });
