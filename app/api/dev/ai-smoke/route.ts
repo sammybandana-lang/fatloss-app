@@ -15,12 +15,13 @@ export async function GET() {
   }
 
   const fixture: AssessmentInput = {
-    weight_lbs_current: 210,
+    weight_lbs_start: 210,
     weight_lbs_goal: 195,
-    days_tracked: 30,
-    avg_calories_last_7d: 2100,
-    avg_protein_g_last_7d: 165,
-    workout_count_last_7d: 4,
+    weight_lbs_current: 202,
+    yesterday_calories: 2100,
+    yesterday_protein_g: 165,
+    yesterday_workout_present: 1,
+    yesterday_workout_volume_lbs: 8500,
   };
 
   try {

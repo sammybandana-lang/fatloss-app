@@ -24,12 +24,13 @@ const VALID_ENV = {
 };
 
 const validInput: AssessmentInput = {
-  weight_lbs_current: 210,
+  weight_lbs_start: 210,
   weight_lbs_goal: 195,
-  days_tracked: 30,
-  avg_calories_last_7d: 2100,
-  avg_protein_g_last_7d: 165,
-  workout_count_last_7d: 4,
+  weight_lbs_current: 202,
+  yesterday_calories: 2100,
+  yesterday_protein_g: 165,
+  yesterday_workout_present: 1,
+  yesterday_workout_volume_lbs: 8500,
 };
 
 beforeEach(() => {
@@ -38,7 +39,9 @@ beforeEach(() => {
   }
   mockCreate.mockReset();
   mockCreate.mockResolvedValue({
-    choices: [{ message: { content: "mocked assessment text" } }],
+    choices: [
+      { message: { content: '{"short_assessment":"mocked","grade":"A+"}' } },
+    ],
     usage: { prompt_tokens: 150, completion_tokens: 80 },
   });
 });
@@ -48,10 +51,11 @@ afterEach(() => {
 });
 
 describe("generateAssessment", () => {
-  it("returns the model's content and normalized usage stats", async () => {
+  it("returns the model's parsed JSON and normalized usage stats", async () => {
     const result = await generateAssessment(validInput);
 
-    expect(result.content).toBe("mocked assessment text");
+    expect(result.short_assessment).toBe("mocked");
+    expect(result.grade).toBe("A+");
     expect(result.usage.input_tokens).toBe(150);
     expect(result.usage.output_tokens).toBe(80);
     expect(result.model).toBe(VALID_ENV.AZURE_OPENAI_DEPLOYMENT);
@@ -63,5 +67,16 @@ describe("generateAssessment", () => {
     await expect(generateAssessment(validInput)).rejects.toThrow(
       "AZURE_OPENAI_API_KEY",
     );
+  });
+
+  it("rejects when the model returns an invalid grade", async () => {
+    mockCreate.mockResolvedValue({
+      choices: [
+        { message: { content: '{"short_assessment":"mocked","grade":"X"}' } },
+      ],
+      usage: { prompt_tokens: 150, completion_tokens: 80 },
+    });
+
+    await expect(generateAssessment(validInput)).rejects.toThrow("invalid grade");
   });
 });

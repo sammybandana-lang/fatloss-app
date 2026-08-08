@@ -55,6 +55,9 @@ export default async function HomePage() {
           <Link href="/goals" className="text-sm text-zinc-500 underline">
             Goals
           </Link>
+          <Link href="/assessment" className="text-sm text-zinc-500 underline">
+            Assessment
+          </Link>
           <HevySyncButton />
           <form action={logout}>
             <button type="submit" className="text-sm text-zinc-500 underline">
