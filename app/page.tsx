@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getLatestWorkout } from "@/lib/hevy/queries";
@@ -51,6 +52,9 @@ export default async function HomePage() {
       <div className="flex items-start justify-between">
         <h1 className="text-2xl font-semibold">Dashboard</h1>
         <div className="flex flex-col items-end gap-2">
+          <Link href="/goals" className="text-sm text-zinc-500 underline">
+            Goals
+          </Link>
           <HevySyncButton />
           <form action={logout}>
             <button type="submit" className="text-sm text-zinc-500 underline">
