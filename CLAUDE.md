@@ -5,6 +5,7 @@ These are the rules you (the AI assistant) must follow at all times while workin
 ## What this project is
 
 A web app that helps track fat loss. It does three things:
+
 - Pulls daily nutrition numbers from Lose It summary emails.
 - Pulls workouts from the Hevy app.
 - Lets a user manually type in their body weight, body-fat %, and tape measurements.
@@ -32,26 +33,36 @@ One user must **never**, under any circumstances, see or change another user's d
 - **Start locked, then open up.** When you turn RLS on, the table is closed to everyone until you add an explicit rule that says "a user may see their own rows." Grant only what's needed and nothing more.
 - **Do it in both places (belt and suspenders).** The database rule is the guaranteed backstop; also check ownership in the backend code for everything else.
 
+
+
 ## Logging in and knowing who's asking
 
 - There's a login. Every request has to establish who the logged-in user is.
 - The backend figures out who the user is **from their verified login only** — never trust the screen to say "I am user X." A screen can lie; a verified login can't.
+
+
 
 ## Two database keys — use the right one (be very careful)
 
 - The **normal (public) key** respects the separation rules. Use it for anything a logged-in user does.
 - There is also a **powerful "master" key** that **ignores the separation rules entirely.** Only ever use it inside trusted background jobs (like the Hevy pull). Never use it to handle a user's request, and never put it anywhere the browser can reach. Using the master key in the wrong place is the single easiest way to leak everyone's data.
 
+
+
 ## Prove the separation actually works (don't skip this)
 
 - A data leak **won't show up in normal testing**, because a test account can often see everything anyway. So test it on purpose: create two users, put some data under each, then confirm that while logged in as user 1 you get **nothing** belonging to user 2.
 - Every time you add a new table, turning on its access control is part of creating it — never a "do it later" task.
+
+
 
 ## Keep the pieces in their lanes
 
 - **The thinking lives in the back end, never in the screens.** Calculations, data handling, and rules go in the backend — the frontend only shows data and sends what the user types.
 - **The screens never talk to the outside directly.** The web pages don't call Hevy, read email, or touch secret keys. Only the background jobs and backend do that.
 - **Outside-data work runs as scheduled background jobs**, not inside a web page.
+
+
 
 ## Be extra careful here — ask me first
 
@@ -60,12 +71,16 @@ One user must **never**, under any circumstances, see or change another user's d
 - **Don't change the database structure** (adding/removing tables or columns) without showing me the plan first — and any new table must have its separation rules turned on from the start.
 - **This holds people's personal health numbers.** Never send anyone's data anywhere except their own place in the database and the coach summary they've approved.
 
+
+
 ## How we work together
 
 - **Explain first, in plain language.** Before you make a change, tell me what you're about to do and why. I want the reasoning, not just code.
 - **Reuse before you rebuild.** Check whether something already exists in the project and use it. Don't rebuild what we have.
 - **Keep it simple.** Prefer the shortest solution that's still easy to read. No clever tricks that are hard to follow.
 - **One change at a time.** Small changes I can review, not giant ones.
+
+
 
 ## What "tidy" means
 
@@ -74,12 +89,32 @@ One user must **never**, under any circumstances, see or change another user's d
 - Don't hide problems by wrapping code in error-catching just to keep it quiet. Handle failures properly or tell me.
 - Write a quick test for anything that does real work — the calculations, the data parsing, and the data-separation rules.
 
+
+
 ## Practice vs. real (two separate setups)
 
 - There are two separate environments: a **practice** one (dev) and the **real live** one (prod).
 - Never point practice code at the real database.
 - I change the database by editing a tracked file, testing on practice first, then promoting to real. Never hand-edit the real database directly.
 
+
+
 ## When in doubt
 
 Stop and ask me — in plain language — rather than guessing. Especially for anything about keeping users' data separate, or anything in the "be extra careful" list.
+
+
+
+## Working with Claude — mandatory verification rules
+
+These rules exist because "be more careful" is not a control. They are reviewable — Claude can be pointed at a specific rule number in a future session if it slips. Adding a rule here is how a lesson from `LESSONS_LEARNED.md` becomes an enforceable operating procedure.
+
+1. **Diff user-supplied ground truth field-by-field before proposing a hypothesis.** When the user pastes a URL, config value, error message, working output, or any other artifact with the shape of ground truth, Claude's first action is a character-level comparison against whatever the code or configuration is currently producing. The diff is stated explicitly in the response, not done as an internal check. Every difference is called out — not just the one that fits the current theory. If Claude is comparing two things that should match and doesn't diff them field by field, Claude has skipped this rule.
+
+2. **A failed debugging hypothesis is abandoned, not iterated on.** When a hypothesis fails to resolve the issue on first application, do not try variations of it. Do not adjust its parameters. Return to the evidence and generate a genuinely different hypothesis.
+
+3. **When an SDK or client library produces a mysterious error, a direct HTTP bypass test (curl, `Invoke-RestMethod`, or equivalent) comes before further SDK-layer debugging.** Not after two failed SDK attempts — first. The bypass isolates whether the problem is in our code or in the endpoint/config, in one step.
+
+4. **Cited sources must be evaluated for fit to the actual evidence, not just for support of the current hypothesis.** A grounded citation used to support the wrong hypothesis is worse than no citation at all — it launders bad reasoning into confident-sounding advice. Before citing, ask whether the source describes the observed symptoms, not just something that sounds adjacent.
+
+5. **Re-read user-supplied information from earlier in the chat before continuing to debug.** When something the user provided earlier (a URL, an error, a screenshot, a config snippet) is directly relevant to the current problem, Claude re-checks that information before proposing a fix. Chat history is context, not disposable.
