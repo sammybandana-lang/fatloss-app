@@ -3,7 +3,7 @@
 import { createClient } from "@/lib/supabase/server";
 import { getMostRecentLoseItCsv } from "@/lib/gmail/client";
 import { parseLoseItCsv } from "@/lib/loseit/parser";
-import { getTodaysDietTotals, type TodayTotals } from "@/lib/loseit/queries";
+import { getLatestDayDietTotals, type LatestDayTotals } from "@/lib/loseit/queries";
 
 // Matches the `unique (user_id, entry_date, name, food_type, calories)`
 // constraint in supabase/migrations/20260803192711_create_diet_entries.sql.
@@ -72,10 +72,11 @@ export async function importLoseItToday(): Promise<ImportResult> {
 }
 
 /**
- * Thin server action wrapper so the client component can re-fetch today's
- * totals after an import — client components can't call server-only query
- * functions directly, only server actions.
+ * Thin server action wrapper so the client component can re-fetch the
+ * latest day's totals after an import — client components can't call
+ * server-only query functions directly, only server actions.
  */
-export async function getTodaysDietTotalsAction(): Promise<TodayTotals | null> {
-  return getTodaysDietTotals();
+export async function getLatestDayDietTotalsAction(): Promise<LatestDayTotals | null> {
+  const supabase = await createClient();
+  return getLatestDayDietTotals(supabase);
 }
