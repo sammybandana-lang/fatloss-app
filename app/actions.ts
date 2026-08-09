@@ -48,5 +48,8 @@ export async function addMeasurement(formData: FormData) {
     throw new Error(error.message);
   }
 
+  // Refresh both the measurements page (where this form lives) and the
+  // dashboard (which shows the latest measurement in its Current Stats tile).
+  revalidatePath("/measurements");
   revalidatePath("/");
 }

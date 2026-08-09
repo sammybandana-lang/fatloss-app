@@ -59,23 +59,25 @@ export function AssessmentClient() {
 
   return (
     <div className="mt-11">
-      {state.status !== "success" && (
-        <button
-          type="button"
-          onClick={handleGenerate}
-          disabled={state.status === "loading"}
-          className="rounded-inner border-[0.5px] border-hairline px-4 py-2 text-sm font-medium text-primary hover:bg-surface disabled:opacity-50"
-        >
-          {state.status === "loading" ? "Generating…" : "Generate assessment"}
-        </button>
-      )}
+      <button
+        type="button"
+        onClick={handleGenerate}
+        disabled={state.status === "loading"}
+        className="rounded-inner border-[0.5px] border-hairline px-4 py-2 text-sm font-medium text-primary hover:bg-surface disabled:opacity-50"
+      >
+        {state.status === "loading"
+          ? "Generating…"
+          : state.status === "success"
+            ? "Regenerate assessment"
+            : "Generate assessment"}
+      </button>
 
       {state.status === "error" && (
         <p className="mt-4 text-sm text-off-track">{state.error}</p>
       )}
 
       {state.status === "success" && (
-        <div className="flex flex-col">
+        <div className="mt-9 flex flex-col sm:mt-10">
           <p className="mb-9 text-[13px] text-secondary sm:mb-10">
             {formatDateShort(state.yesterdayDate)}
           </p>

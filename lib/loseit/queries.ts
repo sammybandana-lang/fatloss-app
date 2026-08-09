@@ -8,6 +8,26 @@ export interface LatestDayTotals {
   carbs_g: number;
 }
 
+interface DietEntryMacros {
+  calories: number | null;
+  fat_g: number | null;
+  protein_g: number | null;
+  carbs_g: number | null;
+}
+
+/** Sums calorie/macro fields across a set of `diet_entries` rows, treating nulls as 0. */
+function sumDietMacros(entries: DietEntryMacros[]): Omit<LatestDayTotals, "entryDate"> {
+  return entries.reduce<Omit<LatestDayTotals, "entryDate">>(
+    (totals, entry) => ({
+      calories: totals.calories + (entry.calories ?? 0),
+      fat_g: totals.fat_g + (entry.fat_g ?? 0),
+      protein_g: totals.protein_g + (entry.protein_g ?? 0),
+      carbs_g: totals.carbs_g + (entry.carbs_g ?? 0),
+    }),
+    { calories: 0, fat_g: 0, protein_g: 0, carbs_g: 0 },
+  );
+}
+
 /**
  * Sums the caller's `diet_entries` for their most recently logged day.
  * LoseIt's daily email arrives the morning after, so "today" almost never
@@ -33,24 +53,32 @@ export async function getLatestDayDietTotals(
     return null;
   }
 
+  return getDietTotalsForDate(supabase, latest.entry_date);
+}
+
+/**
+ * Sums the caller's `diet_entries` for one specific `entry_date` (as
+ * opposed to `getLatestDayDietTotals`, which finds the most recent day on
+ * its own). Used by the dashboard to show yesterday's nutrition. Relies
+ * entirely on Row-Level Security to scope rows to the caller. Returns
+ * `null` when there are no entries for that date.
+ */
+export async function getDietTotalsForDate(
+  supabase: SupabaseClient,
+  date: string,
+): Promise<LatestDayTotals | null> {
   const { data: entries, error } = await supabase
     .from("diet_entries")
     .select("calories, fat_g, protein_g, carbs_g")
-    .eq("entry_date", latest.entry_date);
+    .eq("entry_date", date);
 
   if (error) {
     throw new Error(error.message);
   }
 
-  const sums = (entries ?? []).reduce(
-    (totals, entry) => ({
-      calories: totals.calories + (entry.calories ?? 0),
-      fat_g: totals.fat_g + (entry.fat_g ?? 0),
-      protein_g: totals.protein_g + (entry.protein_g ?? 0),
-      carbs_g: totals.carbs_g + (entry.carbs_g ?? 0),
-    }),
-    { calories: 0, fat_g: 0, protein_g: 0, carbs_g: 0 },
-  );
+  if (!entries || entries.length === 0) {
+    return null;
+  }
 
-  return { entryDate: latest.entry_date, ...sums };
+  return { entryDate: date, ...sumDietMacros(entries) };
 }

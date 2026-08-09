@@ -23,9 +23,14 @@ export default async function AssessmentPage() {
         <h1 className="font-display text-[32px] font-normal text-primary sm:text-[44px]">
           Assessment
         </h1>
-        <Link href="/" className="text-sm text-secondary hover:text-primary">
-          Back to dashboard
-        </Link>
+        <nav className="flex gap-4 text-sm">
+          <Link href="/measurements" className="text-secondary hover:text-primary">
+            Measurements
+          </Link>
+          <Link href="/" className="text-secondary hover:text-primary">
+            Back to dashboard
+          </Link>
+        </nav>
       </div>
 
       <AssessmentClient />
