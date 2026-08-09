@@ -97,24 +97,21 @@ One user must **never**, under any circumstances, see or change another user's d
 - Never point practice code at the real database.
 - I change the database by editing a tracked file, testing on practice first, then promoting to real. Never hand-edit the real database directly.
 
+## UI Guidelines
 
+All new UI must consume design tokens (colors, fonts, spacing) via the CSS variables in `globals.css` and use components from `app/_components/design/` where they fit. Never introduce raw hex colors, font families, or arbitrary spacing values in feature code. If an existing component doesn't fit a new use case, extend the design system rather than working around it — a new component goes into `_components/design/`, not into the feature file.
 
 ## When in doubt
 
 Stop and ask me — in plain language — rather than guessing. Especially for anything about keeping users' data separate, or anything in the "be extra careful" list.
-
-
 
 ## Working with Claude — mandatory verification rules
 
 These rules exist because "be more careful" is not a control. They are reviewable — Claude can be pointed at a specific rule number in a future session if it slips. Adding a rule here is how a lesson from `LESSONS_LEARNED.md` becomes an enforceable operating procedure.
 
 1. **Diff user-supplied ground truth field-by-field before proposing a hypothesis.** When the user pastes a URL, config value, error message, working output, or any other artifact with the shape of ground truth, Claude's first action is a character-level comparison against whatever the code or configuration is currently producing. The diff is stated explicitly in the response, not done as an internal check. Every difference is called out — not just the one that fits the current theory. If Claude is comparing two things that should match and doesn't diff them field by field, Claude has skipped this rule.
-
 2. **A failed debugging hypothesis is abandoned, not iterated on.** When a hypothesis fails to resolve the issue on first application, do not try variations of it. Do not adjust its parameters. Return to the evidence and generate a genuinely different hypothesis.
-
-3. **When an SDK or client library produces a mysterious error, a direct HTTP bypass test (curl, `Invoke-RestMethod`, or equivalent) comes before further SDK-layer debugging.** Not after two failed SDK attempts — first. The bypass isolates whether the problem is in our code or in the endpoint/config, in one step.
-
+3. **When an SDK or client library produces a mysterious error, a direct HTTP bypass test (curl,** `Invoke-RestMethod`**, or equivalent) comes before further SDK-layer debugging.** Not after two failed SDK attempts — first. The bypass isolates whether the problem is in our code or in the endpoint/config, in one step.
 4. **Cited sources must be evaluated for fit to the actual evidence, not just for support of the current hypothesis.** A grounded citation used to support the wrong hypothesis is worse than no citation at all — it launders bad reasoning into confident-sounding advice. Before citing, ask whether the source describes the observed symptoms, not just something that sounds adjacent.
-
 5. **Re-read user-supplied information from earlier in the chat before continuing to debug.** When something the user provided earlier (a URL, an error, a screenshot, a config snippet) is directly relevant to the current problem, Claude re-checks that information before proposing a fix. Chat history is context, not disposable.
+

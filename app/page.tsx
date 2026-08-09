@@ -8,6 +8,12 @@ import { addMeasurement } from "./actions";
 import { logout } from "./login/actions";
 import { HevySyncButton } from "./hevy-sync-button";
 import { DietLatestDayCard } from "@/app/DietLatestDayCard";
+import { PageShell } from "@/app/_components/design/PageShell";
+import { Card } from "@/app/_components/design/Card";
+import { Eyebrow } from "@/app/_components/design/Eyebrow";
+
+const inputClass =
+  "rounded-inner border-[0.5px] border-hairline bg-transparent px-4 py-3 text-sm text-primary focus:border-gold focus:outline-none";
 
 function formatSet(set: { reps: number | null; weight_kg: number | null }): string {
   const parts: string[] = [];
@@ -48,162 +54,176 @@ export default async function HomePage() {
   const initialTotals = await getLatestDayDietTotals(supabase);
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-md flex-col gap-8 px-6 py-12">
-      <div className="flex items-start justify-between">
-        <h1 className="text-2xl font-semibold">Dashboard</h1>
-        <div className="flex flex-col items-end gap-2">
-          <Link href="/goals" className="text-sm text-zinc-500 underline">
-            Goals
-          </Link>
-          <Link href="/assessment" className="text-sm text-zinc-500 underline">
-            Assessment
-          </Link>
-          <HevySyncButton />
-          <form action={logout}>
-            <button type="submit" className="text-sm text-zinc-500 underline">
-              Log out
+    <PageShell>
+      <div className="flex flex-col gap-10">
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+            <h1 className="font-display text-2xl font-normal text-primary sm:text-[32px]">
+              Dashboard
+            </h1>
+            <nav className="flex gap-4 text-sm">
+              <Link href="/goals" className="text-secondary hover:text-primary">
+                Goals
+              </Link>
+              <Link href="/assessment" className="text-secondary hover:text-primary">
+                Assessment
+              </Link>
+              <form action={logout}>
+                <button type="submit" className="text-secondary hover:text-primary">
+                  Log out
+                </button>
+              </form>
+            </nav>
+          </div>
+
+          <div className="flex justify-end">
+            <HevySyncButton />
+          </div>
+        </div>
+
+        <Card>
+          <form action={addMeasurement} className="flex flex-col gap-6">
+            <label className="flex flex-col gap-1.5 text-xs text-secondary">
+              Weight (lbs)
+              <input
+                name="weight_lbs"
+                type="number"
+                step="0.1"
+                min="0"
+                required
+                className={inputClass}
+              />
+            </label>
+
+            <div className="grid grid-cols-2 gap-6">
+              <label className="flex flex-col gap-1.5 text-xs text-secondary">
+                Body fat %
+                <input
+                  name="body_fat_pct"
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  className={inputClass}
+                />
+              </label>
+              <label className="flex flex-col gap-1.5 text-xs text-secondary">
+                Waist (in)
+                <input
+                  name="waist_in"
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  className={inputClass}
+                />
+              </label>
+              <label className="flex flex-col gap-1.5 text-xs text-secondary">
+                Hips (in)
+                <input
+                  name="hips_in"
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  className={inputClass}
+                />
+              </label>
+              <label className="flex flex-col gap-1.5 text-xs text-secondary">
+                Neck (in)
+                <input
+                  name="neck_in"
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  className={inputClass}
+                />
+              </label>
+            </div>
+
+            <button
+              type="submit"
+              className="w-full rounded-inner bg-primary px-4 py-3 text-sm font-medium text-bg hover:opacity-85"
+            >
+              Add
             </button>
           </form>
-        </div>
-      </div>
+        </Card>
 
-      <form
-        action={addMeasurement}
-        className="flex flex-col gap-3 rounded border border-zinc-200 p-4"
-      >
-        <label className="flex flex-col gap-1 text-sm">
-          Weight (lbs)
-          <input
-            name="weight_lbs"
-            type="number"
-            step="0.1"
-            min="0"
-            required
-            className="rounded border border-zinc-300 px-3 py-2"
-          />
-        </label>
-
-        <div className="grid grid-cols-2 gap-3">
-          <label className="flex flex-col gap-1 text-sm">
-            Body fat %
-            <input
-              name="body_fat_pct"
-              type="number"
-              step="0.1"
-              min="0"
-              className="rounded border border-zinc-300 px-3 py-2"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-sm">
-            Waist (in)
-            <input
-              name="waist_in"
-              type="number"
-              step="0.1"
-              min="0"
-              className="rounded border border-zinc-300 px-3 py-2"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-sm">
-            Hips (in)
-            <input
-              name="hips_in"
-              type="number"
-              step="0.1"
-              min="0"
-              className="rounded border border-zinc-300 px-3 py-2"
-            />
-          </label>
-          <label className="flex flex-col gap-1 text-sm">
-            Neck (in)
-            <input
-              name="neck_in"
-              type="number"
-              step="0.1"
-              min="0"
-              className="rounded border border-zinc-300 px-3 py-2"
-            />
-          </label>
-        </div>
-
-        <button
-          type="submit"
-          className="rounded bg-black px-4 py-2 text-sm font-medium text-white"
-        >
-          Add
-        </button>
-      </form>
-
-      <ul className="flex flex-col gap-2">
-        {measurements && measurements.length > 0 ? (
-          measurements.map((measurement) => (
-            <li
-              key={measurement.id}
-              className="flex flex-col gap-1 rounded border border-zinc-200 px-3 py-2 text-sm"
-            >
-              <div className="flex justify-between">
-                <span className="font-medium">
-                  {measurement.weight_lbs} lbs
-                </span>
-                <span className="text-zinc-500">
-                  {new Date(measurement.created_at).toLocaleDateString()}
-                </span>
-              </div>
-              {(measurement.body_fat_pct !== null ||
-                measurement.waist_in !== null ||
-                measurement.hips_in !== null ||
-                measurement.neck_in !== null) && (
-                <div className="flex flex-wrap gap-x-3 text-xs text-zinc-500">
-                  {measurement.body_fat_pct !== null && (
-                    <span>Body fat: {measurement.body_fat_pct}%</span>
-                  )}
-                  {measurement.waist_in !== null && (
-                    <span>Waist: {measurement.waist_in} in</span>
-                  )}
-                  {measurement.hips_in !== null && (
-                    <span>Hips: {measurement.hips_in} in</span>
-                  )}
-                  {measurement.neck_in !== null && (
-                    <span>Neck: {measurement.neck_in} in</span>
+        <Card>
+          {measurements && measurements.length > 0 ? (
+            <div className="flex flex-col">
+              {measurements.map((measurement) => (
+                <div
+                  key={measurement.id}
+                  className="flex flex-col gap-1 border-b-[0.5px] border-hairline py-4 first:pt-0 last:border-0 last:pb-0"
+                >
+                  <div className="flex items-baseline justify-between">
+                    <span className="font-display text-2xl font-normal text-primary">
+                      {measurement.weight_lbs} lbs
+                    </span>
+                    <span className="text-xs text-secondary">
+                      {new Date(measurement.created_at).toLocaleDateString()}
+                    </span>
+                  </div>
+                  {(measurement.body_fat_pct !== null ||
+                    measurement.waist_in !== null ||
+                    measurement.hips_in !== null ||
+                    measurement.neck_in !== null) && (
+                    <div className="font-mono flex flex-wrap gap-x-4 text-xs text-muted">
+                      {measurement.body_fat_pct !== null && (
+                        <span>Body fat: {measurement.body_fat_pct}%</span>
+                      )}
+                      {measurement.waist_in !== null && (
+                        <span>Waist: {measurement.waist_in} in</span>
+                      )}
+                      {measurement.hips_in !== null && (
+                        <span>Hips: {measurement.hips_in} in</span>
+                      )}
+                      {measurement.neck_in !== null && (
+                        <span>Neck: {measurement.neck_in} in</span>
+                      )}
+                    </div>
                   )}
                 </div>
-              )}
-            </li>
-          ))
-        ) : (
-          <p className="text-sm text-zinc-500">No measurements yet.</p>
-        )}
-      </ul>
-
-      <section className="flex flex-col gap-3">
-        <h2 className="text-lg font-semibold">Latest Hevy workout</h2>
-        {latestWorkout ? (
-          <div className="flex flex-col gap-3 rounded border border-zinc-200 px-3 py-2 text-sm">
-            <div className="flex justify-between">
-              <span className="font-medium">{latestWorkout.title}</span>
-              <span className="text-zinc-500">
-                {latestWorkout.start_time
-                  ? new Date(latestWorkout.start_time).toLocaleDateString()
-                  : "—"}
-              </span>
+              ))}
             </div>
-            {latestWorkout.exercises.map((exercise) => (
-              <div key={exercise.id} className="flex flex-col gap-1">
-                <span className="font-medium">{exercise.title}</span>
-                <ul className="flex flex-col gap-0.5 pl-3 text-xs text-zinc-500">
-                  {exercise.sets.map((set) => (
-                    <li key={set.set_index}>{formatSet(set)}</li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <p className="text-sm text-zinc-500">No workouts synced yet.</p>
-        )}
-      </section>
+          ) : (
+            <p className="text-sm text-secondary">No measurements yet.</p>
+          )}
+        </Card>
 
-      <DietLatestDayCard initialTotals={initialTotals} />
-    </main>
+        <section className="flex flex-col gap-4">
+          <Eyebrow>Latest Hevy workout</Eyebrow>
+          {latestWorkout ? (
+            <div className="flex flex-col gap-4">
+              <div className="flex items-baseline justify-between">
+                <span className="text-xl font-medium text-primary">
+                  {latestWorkout.title}
+                </span>
+                <span className="text-xs text-secondary">
+                  {latestWorkout.start_time
+                    ? new Date(latestWorkout.start_time).toLocaleDateString()
+                    : "—"}
+                </span>
+              </div>
+              {latestWorkout.exercises.map((exercise) => (
+                <div key={exercise.id} className="flex flex-col gap-1 pl-3">
+                  <span className="text-sm font-medium text-primary">
+                    {exercise.title}
+                  </span>
+                  <ul className="font-mono flex flex-col gap-0.5 pl-3 text-[13px] text-secondary">
+                    {exercise.sets.map((set) => (
+                      <li key={set.set_index}>{formatSet(set)}</li>
+                    ))}
+                  </ul>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-secondary">No workouts synced yet.</p>
+          )}
+        </section>
+
+        <DietLatestDayCard initialTotals={initialTotals} />
+      </div>
+    </PageShell>
   );
 }

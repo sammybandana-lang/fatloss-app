@@ -24,11 +24,11 @@ export function HevySyncButton() {
       <button
         type="submit"
         disabled={isPending}
-        className="rounded border border-black px-4 py-2 text-sm font-medium disabled:opacity-50"
+        className="rounded-inner border-[0.5px] border-hairline px-4 py-2 text-sm font-medium text-primary hover:bg-surface disabled:opacity-50"
       >
         {isPending ? "Syncing…" : "Sync Hevy"}
       </button>
-      {state.error && <p className="text-xs text-red-600">{state.error}</p>}
+      {state.error && <p className="text-xs text-off-track">{state.error}</p>}
     </form>
   );
 }

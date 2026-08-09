@@ -3,6 +3,10 @@
 import { Suspense } from "react";
 import { useSearchParams } from "next/navigation";
 import { login, signup } from "./actions";
+import { Card } from "@/app/_components/design/Card";
+
+const inputClass =
+  "rounded-inner border-[0.5px] border-hairline bg-transparent px-4 py-3 text-sm text-primary focus:border-gold focus:outline-none";
 
 function LoginForm() {
   const searchParams = useSearchParams();
@@ -10,47 +14,49 @@ function LoginForm() {
   const message = searchParams.get("message");
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-sm flex-col justify-center gap-4 px-6">
-      <h1 className="text-2xl font-semibold">Fat Loss Tracker</h1>
+    <main className="flex min-h-screen items-center justify-center bg-bg px-4 py-6 sm:px-8">
+      <div className="w-full max-w-[400px]">
+        <Card>
+          <h1 className="font-display text-[32px] font-normal text-primary">
+            Sign in
+          </h1>
+          <p className="mt-2 text-sm text-secondary">Welcome back</p>
 
-      {error && <p className="text-sm text-red-600">{error}</p>}
-      {message && <p className="text-sm text-green-700">{message}</p>}
+          <form className="mt-8 flex flex-col gap-6">
+            {error && <p className="text-sm text-off-track">{error}</p>}
+            {message && <p className="text-sm text-on-track">{message}</p>}
 
-      <form className="flex flex-col gap-3">
-        <label className="flex flex-col gap-1 text-sm">
-          Email
-          <input
-            name="email"
-            type="email"
-            required
-            className="rounded border border-zinc-300 px-3 py-2"
-          />
-        </label>
-        <label className="flex flex-col gap-1 text-sm">
-          Password
-          <input
-            name="password"
-            type="password"
-            required
-            minLength={6}
-            className="rounded border border-zinc-300 px-3 py-2"
-          />
-        </label>
-        <div className="flex gap-3 pt-2">
-          <button
-            formAction={signup}
-            className="flex-1 rounded border border-black px-4 py-2 text-sm font-medium"
-          >
-            Sign up
-          </button>
-          <button
-            formAction={login}
-            className="flex-1 rounded bg-black px-4 py-2 text-sm font-medium text-white"
-          >
-            Log in
-          </button>
-        </div>
-      </form>
+            <label className="flex flex-col gap-1.5 text-xs text-secondary">
+              Email
+              <input name="email" type="email" required className={inputClass} />
+            </label>
+            <label className="flex flex-col gap-1.5 text-xs text-secondary">
+              Password
+              <input
+                name="password"
+                type="password"
+                required
+                minLength={6}
+                className={inputClass}
+              />
+            </label>
+
+            <button
+              formAction={login}
+              className="w-full rounded-inner bg-primary px-4 py-3 text-sm font-medium text-bg hover:opacity-85"
+            >
+              Log in
+            </button>
+
+            <button
+              formAction={signup}
+              className="text-center text-[13px] text-secondary hover:text-primary"
+            >
+              Sign up
+            </button>
+          </form>
+        </Card>
+      </div>
     </main>
   );
 }

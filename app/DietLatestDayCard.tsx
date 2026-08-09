@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { importLoseItToday, getLatestDayDietTotalsAction } from "@/app/loseit-actions";
 import type { LatestDayTotals } from "@/lib/loseit/queries";
+import { Card } from "@/app/_components/design/Card";
+import { StatBlock } from "@/app/_components/design/StatBlock";
 
 interface DietLatestDayCardProps {
   initialTotals: LatestDayTotals | null;
@@ -53,37 +55,43 @@ export function DietLatestDayCard({ initialTotals }: DietLatestDayCardProps) {
     : "Latest food (LoseIt)";
 
   return (
-    <section className="flex flex-col gap-3">
-      <h2 className="text-lg font-semibold">{heading}</h2>
-      <div className="flex flex-col gap-3 rounded border border-zinc-200 px-3 py-2 text-sm">
-        {totals ? (
-          <div className="flex flex-col gap-1">
-            <span>Calories: {Math.round(totals.calories)}</span>
-            <span>Fat: {Math.round(totals.fat_g)}g</span>
-            <span>Protein: {Math.round(totals.protein_g)}g</span>
-            <span>Carbs: {Math.round(totals.carbs_g)}g</span>
-          </div>
-        ) : (
-          <p className="text-zinc-500">No LoseIt data imported yet.</p>
-        )}
+    <section className="flex flex-col gap-4">
+      <h2 className="font-display text-2xl font-normal text-primary">{heading}</h2>
+      <Card>
+        <div className="flex flex-col gap-6">
+          {totals ? (
+            <div className="grid grid-cols-2 gap-6 sm:grid-cols-4">
+              <StatBlock label="Calories" value={String(Math.round(totals.calories))} />
+              <StatBlock label="Fat" value={String(Math.round(totals.fat_g))} unit="g" />
+              <StatBlock
+                label="Protein"
+                value={String(Math.round(totals.protein_g))}
+                unit="g"
+              />
+              <StatBlock label="Carbs" value={String(Math.round(totals.carbs_g))} unit="g" />
+            </div>
+          ) : (
+            <p className="text-sm text-secondary">No LoseIt data imported yet.</p>
+          )}
 
-        <button
-          type="button"
-          onClick={handleImport}
-          disabled={importing}
-          className="self-start rounded border border-black px-4 py-2 text-sm font-medium disabled:opacity-50"
-        >
-          {importing ? "Importing..." : "Import LoseIt"}
-        </button>
-
-        {message && (
-          <p
-            className={`text-xs ${message.startsWith("Import failed") ? "text-red-600" : "text-zinc-500"}`}
+          <button
+            type="button"
+            onClick={handleImport}
+            disabled={importing}
+            className="self-start rounded-inner border-[0.5px] border-hairline px-4 py-2 text-sm font-medium text-primary hover:bg-bg disabled:opacity-50"
           >
-            {message}
-          </p>
-        )}
-      </div>
+            {importing ? "Importing..." : "Import LoseIt"}
+          </button>
+
+          {message && (
+            <p
+              className={`text-xs ${message.startsWith("Import failed") ? "text-off-track" : "text-secondary"}`}
+            >
+              {message}
+            </p>
+          )}
+        </div>
+      </Card>
     </section>
   );
 }
