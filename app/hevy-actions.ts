@@ -73,9 +73,10 @@ async function upsertWorkout(supabase: SupabaseClient, mapped: MappedWorkout) {
  * Supabase. `user_id` is never sent — the database fills it in (default
  * `auth.uid()`) and Row-Level Security ensures a user can only ever write
  * their own rows. Safe to run repeatedly: re-syncing updates existing rows
- * instead of duplicating them.
+ * instead of duplicating them. Returns the count synced so callers can
+ * show a status message.
  */
-export async function syncHevyWorkouts() {
+export async function syncHevyWorkouts(): Promise<{ workoutCount: number }> {
   const supabase = await createClient();
 
   const {
@@ -93,4 +94,6 @@ export async function syncHevyWorkouts() {
   }
 
   revalidatePath("/");
+
+  return { workoutCount: rawWorkouts.length };
 }

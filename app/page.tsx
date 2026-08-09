@@ -1,29 +1,47 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
-import { getLatestWorkout } from "@/lib/hevy/queries";
-import { getLatestDayDietTotals } from "@/lib/loseit/queries";
+import { getWorkoutsForDate, type LatestWorkoutExercise } from "@/lib/hevy/queries";
+import { getDietTotalsForDate } from "@/lib/loseit/queries";
+import { yesterdayInEasternTime } from "@/lib/dates";
 import { kgToLbs } from "@/lib/units";
-import { addMeasurement } from "./actions";
+import { getGoals } from "@/app/goals/actions";
 import { logout } from "./login/actions";
-import { HevySyncButton } from "./hevy-sync-button";
-import { DietLatestDayCard } from "@/app/DietLatestDayCard";
+import { SyncButton } from "./SyncButton";
 import { PageShell } from "@/app/_components/design/PageShell";
 import { Card } from "@/app/_components/design/Card";
 import { Eyebrow } from "@/app/_components/design/Eyebrow";
+import { StatBlock } from "@/app/_components/design/StatBlock";
 
-const inputClass =
-  "rounded-inner border-[0.5px] border-hairline bg-transparent px-4 py-3 text-sm text-primary focus:border-gold focus:outline-none";
+/** e.g. "2026-08-07" -> "Aug 7". Parsed/formatted in UTC so the date-only string can't shift a day. */
+function formatDateShort(isoDate: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(`${isoDate}T00:00:00Z`));
+}
 
-function formatSet(set: { reps: number | null; weight_kg: number | null }): string {
-  const parts: string[] = [];
-  if (set.reps !== null) {
-    parts.push(`${set.reps} reps`);
-  }
-  if (set.weight_kg !== null) {
-    parts.push(`${kgToLbs(set.weight_kg)} lbs`);
-  }
-  return parts.length > 0 ? parts.join(" · ") : "No data logged";
+/** Renders a nullable goal field as its bare value, or a dash when unset. */
+function formatGoalValue(value: number | null, unit = ""): string {
+  return value === null ? "—" : `${value}${unit}`;
+}
+
+/** Renders a nullable measurement field with its unit, or a dash when unset. */
+function formatMetric(value: number | null, unit: string): string {
+  return value === null ? "—" : `${value}${unit}`;
+}
+
+/** e.g. "Bench Press · 10×225 · 8×235" — a bodyweight set with no weight shows just the reps. */
+function formatExerciseLine(exercise: LatestWorkoutExercise): string {
+  const setStrings = exercise.sets.map((set) => {
+    if (set.weight_kg === null) {
+      return set.reps === null ? "—" : `${set.reps}`;
+    }
+    const weightLbs = kgToLbs(set.weight_kg);
+    return set.reps === null ? `${weightLbs}` : `${set.reps}×${weightLbs}`;
+  });
+  return [exercise.title, ...setStrings].join(" · ");
 }
 
 export default async function HomePage() {
@@ -39,19 +57,26 @@ export default async function HomePage() {
     redirect("/login");
   }
 
-  const { data: measurements, error } = await supabase
+  const { data: latestMeasurements, error } = await supabase
     .from("measurements")
-    .select(
-      "id, weight_lbs, body_fat_pct, waist_in, hips_in, neck_in, created_at",
-    )
-    .order("created_at", { ascending: false });
+    .select("id, weight_lbs, body_fat_pct, waist_in, hips_in, neck_in, created_at")
+    .order("created_at", { ascending: false })
+    .limit(1);
 
   if (error) {
     throw new Error(error.message);
   }
 
-  const latestWorkout = await getLatestWorkout(supabase);
-  const initialTotals = await getLatestDayDietTotals(supabase);
+  const latestMeasurement = latestMeasurements?.[0] ?? null;
+
+  const yesterday = yesterdayInEasternTime();
+  const yesterdayLabel = formatDateShort(yesterday);
+
+  const [goals, dietTotals, workouts] = await Promise.all([
+    getGoals(),
+    getDietTotalsForDate(supabase, yesterday),
+    getWorkoutsForDate(supabase, yesterday),
+  ]);
 
   return (
     <PageShell>
@@ -65,6 +90,9 @@ export default async function HomePage() {
               <Link href="/goals" className="text-secondary hover:text-primary">
                 Goals
               </Link>
+              <Link href="/measurements" className="text-secondary hover:text-primary">
+                Measurements
+              </Link>
               <Link href="/assessment" className="text-secondary hover:text-primary">
                 Assessment
               </Link>
@@ -76,153 +104,113 @@ export default async function HomePage() {
             </nav>
           </div>
 
-          <div className="flex justify-end">
-            <HevySyncButton />
+          <div className="flex justify-end gap-3">
+            <SyncButton />
+            <Link
+              href="/measurements"
+              className="self-start rounded-inner border-[0.5px] border-hairline px-4 py-2 text-sm font-medium text-primary hover:bg-surface"
+            >
+              Enter Measurements
+            </Link>
           </div>
         </div>
 
-        <Card>
-          <form action={addMeasurement} className="flex flex-col gap-6">
-            <label className="flex flex-col gap-1.5 text-xs text-secondary">
-              Weight (lbs)
-              <input
-                name="weight_lbs"
-                type="number"
-                step="0.1"
-                min="0"
-                required
-                className={inputClass}
-              />
-            </label>
-
-            <div className="grid grid-cols-2 gap-6">
-              <label className="flex flex-col gap-1.5 text-xs text-secondary">
-                Body fat %
-                <input
-                  name="body_fat_pct"
-                  type="number"
-                  step="0.1"
-                  min="0"
-                  className={inputClass}
-                />
-              </label>
-              <label className="flex flex-col gap-1.5 text-xs text-secondary">
-                Waist (in)
-                <input
-                  name="waist_in"
-                  type="number"
-                  step="0.1"
-                  min="0"
-                  className={inputClass}
-                />
-              </label>
-              <label className="flex flex-col gap-1.5 text-xs text-secondary">
-                Hips (in)
-                <input
-                  name="hips_in"
-                  type="number"
-                  step="0.1"
-                  min="0"
-                  className={inputClass}
-                />
-              </label>
-              <label className="flex flex-col gap-1.5 text-xs text-secondary">
-                Neck (in)
-                <input
-                  name="neck_in"
-                  type="number"
-                  step="0.1"
-                  min="0"
-                  className={inputClass}
-                />
-              </label>
-            </div>
-
-            <button
-              type="submit"
-              className="w-full rounded-inner bg-primary px-4 py-3 text-sm font-medium text-bg hover:opacity-85"
-            >
-              Add
-            </button>
-          </form>
-        </Card>
-
-        <Card>
-          {measurements && measurements.length > 0 ? (
-            <div className="flex flex-col">
-              {measurements.map((measurement) => (
-                <div
-                  key={measurement.id}
-                  className="flex flex-col gap-1 border-b-[0.5px] border-hairline py-4 first:pt-0 last:border-0 last:pb-0"
-                >
-                  <div className="flex items-baseline justify-between">
-                    <span className="font-display text-2xl font-normal text-primary">
-                      {measurement.weight_lbs} lbs
-                    </span>
-                    <span className="text-xs text-secondary">
-                      {new Date(measurement.created_at).toLocaleDateString()}
-                    </span>
-                  </div>
-                  {(measurement.body_fat_pct !== null ||
-                    measurement.waist_in !== null ||
-                    measurement.hips_in !== null ||
-                    measurement.neck_in !== null) && (
-                    <div className="font-mono flex flex-wrap gap-x-4 text-xs text-muted">
-                      {measurement.body_fat_pct !== null && (
-                        <span>Body fat: {measurement.body_fat_pct}%</span>
-                      )}
-                      {measurement.waist_in !== null && (
-                        <span>Waist: {measurement.waist_in} in</span>
-                      )}
-                      {measurement.hips_in !== null && (
-                        <span>Hips: {measurement.hips_in} in</span>
-                      )}
-                      {measurement.neck_in !== null && (
-                        <span>Neck: {measurement.neck_in} in</span>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))}
-            </div>
+        <section>
+          <Eyebrow>Goals</Eyebrow>
+          {goals ? (
+            <p className="text-sm text-primary">
+              Starting Weight: {formatGoalValue(goals.weight_lbs_start)} · Goal Weight:{" "}
+              {formatGoalValue(goals.weight_lbs_goal)} · Daily Calorie Target:{" "}
+              {formatGoalValue(goals.daily_calories_goal)} · Daily Protein Target:{" "}
+              {formatGoalValue(goals.daily_protein_g_goal, "g")}
+            </p>
           ) : (
-            <p className="text-sm text-secondary">No measurements yet.</p>
-          )}
-        </Card>
-
-        <section className="flex flex-col gap-4">
-          <Eyebrow>Latest Hevy workout</Eyebrow>
-          {latestWorkout ? (
-            <div className="flex flex-col gap-4">
-              <div className="flex items-baseline justify-between">
-                <span className="text-xl font-medium text-primary">
-                  {latestWorkout.title}
-                </span>
-                <span className="text-xs text-secondary">
-                  {latestWorkout.start_time
-                    ? new Date(latestWorkout.start_time).toLocaleDateString()
-                    : "—"}
-                </span>
-              </div>
-              {latestWorkout.exercises.map((exercise) => (
-                <div key={exercise.id} className="flex flex-col gap-1 pl-3">
-                  <span className="text-sm font-medium text-primary">
-                    {exercise.title}
-                  </span>
-                  <ul className="font-mono flex flex-col gap-0.5 pl-3 text-[13px] text-secondary">
-                    {exercise.sets.map((set) => (
-                      <li key={set.set_index}>{formatSet(set)}</li>
-                    ))}
-                  </ul>
-                </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-sm text-secondary">No workouts synced yet.</p>
+            <p className="text-sm text-secondary">
+              No goals set —{" "}
+              <Link href="/goals" className="text-secondary underline hover:text-primary">
+                set goals
+              </Link>
+            </p>
           )}
         </section>
 
-        <DietLatestDayCard initialTotals={initialTotals} />
+        <section>
+          <Eyebrow>Current Stats</Eyebrow>
+          {latestMeasurement ? (
+            <Card>
+              <div className="flex flex-col gap-2">
+                <div className="flex items-baseline justify-between">
+                  <span className="font-display text-2xl font-normal text-primary">
+                    {latestMeasurement.weight_lbs} lbs
+                  </span>
+                  <span className="text-xs text-secondary">
+                    {new Date(latestMeasurement.created_at).toLocaleDateString()}
+                  </span>
+                </div>
+                <div className="font-mono flex flex-wrap gap-x-4 text-xs text-muted">
+                  <span>Body fat: {formatMetric(latestMeasurement.body_fat_pct, "%")}</span>
+                  <span>Waist: {formatMetric(latestMeasurement.waist_in, " in")}</span>
+                  <span>Hips: {formatMetric(latestMeasurement.hips_in, " in")}</span>
+                  <span>Neck: {formatMetric(latestMeasurement.neck_in, " in")}</span>
+                </div>
+              </div>
+            </Card>
+          ) : (
+            <p className="text-sm text-secondary">
+              No measurements yet.{" "}
+              <Link href="/measurements" className="underline hover:text-primary">
+                Add one
+              </Link>
+            </p>
+          )}
+        </section>
+
+        <section>
+          <Eyebrow>{`Nutrition for ${yesterdayLabel} (LoseIt)`}</Eyebrow>
+          {dietTotals ? (
+            <Card>
+              <div className="grid grid-cols-2 gap-6 sm:grid-cols-4">
+                <StatBlock label="Calories" value={String(Math.round(dietTotals.calories))} />
+                <StatBlock label="Fat" value={String(Math.round(dietTotals.fat_g))} unit="g" />
+                <StatBlock
+                  label="Protein"
+                  value={String(Math.round(dietTotals.protein_g))}
+                  unit="g"
+                />
+                <StatBlock label="Carbs" value={String(Math.round(dietTotals.carbs_g))} unit="g" />
+              </div>
+            </Card>
+          ) : (
+            <p className="text-sm text-secondary">No nutrition data for yesterday.</p>
+          )}
+        </section>
+
+        <section>
+          <Eyebrow>{`Workouts for ${yesterdayLabel} (Hevy)`}</Eyebrow>
+          {workouts.length > 0 ? (
+            <div className="flex flex-col gap-6">
+              {workouts.map((workout) => (
+                <div key={workout.id} className="flex flex-col gap-2">
+                  <div className="flex items-baseline justify-between">
+                    <span className="text-sm font-medium text-primary">{workout.title}</span>
+                    <span className="text-xs text-secondary">
+                      {workout.start_time
+                        ? new Date(workout.start_time).toLocaleDateString()
+                        : "—"}
+                    </span>
+                  </div>
+                  <div className="font-mono flex flex-col gap-1 text-[13px] text-secondary">
+                    {workout.exercises.map((exercise) => (
+                      <p key={exercise.id}>{formatExerciseLine(exercise)}</p>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-secondary">No workouts logged yesterday.</p>
+          )}
+        </section>
       </div>
     </PageShell>
   );
