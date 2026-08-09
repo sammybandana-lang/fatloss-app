@@ -2,6 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { AssessmentClient } from "./AssessmentClient";
+import { PageShell } from "@/app/_components/design/PageShell";
 
 export default async function AssessmentPage() {
   const supabase = await createClient();
@@ -17,15 +18,17 @@ export default async function AssessmentPage() {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-md flex-col gap-8 px-6 py-12">
+    <PageShell>
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-semibold">Assessment</h1>
-        <Link href="/" className="text-sm text-zinc-500 underline">
+        <h1 className="font-display text-[32px] font-normal text-primary sm:text-[44px]">
+          Assessment
+        </h1>
+        <Link href="/" className="text-sm text-secondary hover:text-primary">
           Back to dashboard
         </Link>
       </div>
 
       <AssessmentClient />
-    </main>
+    </PageShell>
   );
 }

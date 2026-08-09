@@ -3,6 +3,10 @@
 import { useState } from "react";
 import { generateTodaysAssessment } from "./actions";
 import type { AssessmentGrade, AssessmentInput } from "@/lib/ai/llm-client";
+import { Eyebrow } from "@/app/_components/design/Eyebrow";
+import { StatBlock } from "@/app/_components/design/StatBlock";
+import { DataRow } from "@/app/_components/design/DataRow";
+import { GradeDisplay } from "@/app/_components/design/GradeDisplay";
 
 type State =
   | { status: "idle" }
@@ -18,15 +22,7 @@ type State =
   | { status: "error"; error: string };
 
 function formatWeight(value: number | null): string {
-  return value === null ? "Not set" : `${value} lbs`;
-}
-
-/** Calories/protein are logged together (one LoseIt import) — if either is missing, treat the day as not logged. */
-function formatNutrition(input: AssessmentInput): string {
-  if (input.yesterday_calories === null || input.yesterday_protein_g === null) {
-    return "Not logged";
-  }
-  return `${input.yesterday_calories} cal / ${input.yesterday_protein_g} g protein`;
+  return value === null ? "Not set" : String(value);
 }
 
 /** e.g. "2026-08-07" -> "Aug 7". Parsed/formatted in UTC so the date-only string can't shift a day. */
@@ -36,15 +32,6 @@ function formatDateShort(isoDate: string): string {
     day: "numeric",
     timeZone: "UTC",
   }).format(new Date(isoDate));
-}
-
-function Fact({ label, value }: { label: string; value: string }) {
-  return (
-    <div className="flex flex-col">
-      <span className="text-xs font-medium text-zinc-500">{label}</span>
-      <span className="text-sm">{value}</span>
-    </div>
-  );
 }
 
 export function AssessmentClient() {
@@ -71,65 +58,84 @@ export function AssessmentClient() {
   }
 
   return (
-    <div className="flex flex-col gap-4">
-      <button
-        type="button"
-        onClick={handleGenerate}
-        disabled={state.status === "loading"}
-        className="self-start rounded bg-black px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-      >
-        {state.status === "loading" ? "Generating…" : "Generate assessment"}
-      </button>
+    <div className="mt-11">
+      {state.status !== "success" && (
+        <button
+          type="button"
+          onClick={handleGenerate}
+          disabled={state.status === "loading"}
+          className="rounded-inner border-[0.5px] border-hairline px-4 py-2 text-sm font-medium text-primary hover:bg-surface disabled:opacity-50"
+        >
+          {state.status === "loading" ? "Generating…" : "Generate assessment"}
+        </button>
+      )}
 
       {state.status === "error" && (
-        <p className="text-sm text-red-600">{state.error}</p>
+        <p className="mt-4 text-sm text-off-track">{state.error}</p>
       )}
 
       {state.status === "success" && (
-        <div className="flex flex-col gap-4 rounded border border-zinc-200 p-4 text-sm">
-          <p className="text-xs font-medium text-zinc-500">
-            Assessment for {formatDateShort(state.yesterdayDate)}
+        <div className="flex flex-col">
+          <p className="mb-9 text-[13px] text-secondary sm:mb-10">
+            {formatDateShort(state.yesterdayDate)}
           </p>
 
-          <div className="grid grid-cols-3 gap-3">
-            <Fact label="Goal weight" value={formatWeight(state.input.weight_lbs_goal)} />
-            <Fact
-              label="Starting weight"
-              value={formatWeight(state.input.weight_lbs_start)}
-            />
-            <Fact
-              label="Current weight"
-              value={formatWeight(state.input.weight_lbs_current)}
-            />
+          <div className="mb-9 sm:mb-10">
+            <Eyebrow>Weight</Eyebrow>
+            <div className="grid grid-cols-1 gap-6 sm:grid-cols-3">
+              <StatBlock
+                label="Starting"
+                value={formatWeight(state.input.weight_lbs_start)}
+                unit={state.input.weight_lbs_start !== null ? "lbs" : undefined}
+              />
+              <StatBlock
+                label="Current"
+                value={formatWeight(state.input.weight_lbs_current)}
+                unit={state.input.weight_lbs_current !== null ? "lbs" : undefined}
+              />
+              <StatBlock
+                label="Goal"
+                value={formatWeight(state.input.weight_lbs_goal)}
+                unit={state.input.weight_lbs_goal !== null ? "lbs" : undefined}
+              />
+            </div>
           </div>
 
-          <Fact label="Yesterday's nutrition" value={formatNutrition(state.input)} />
-
-          <div className="flex flex-col">
-            <span className="text-xs font-medium text-zinc-500">
-              Yesterday&apos;s workouts
-            </span>
-            {state.input.yesterday_workout_present === 1 ? (
-              <>
-                <span className="text-sm">{state.yesterdayWorkoutNames.join(" · ")}</span>
-                <span className="text-sm text-zinc-600">
-                  Volume: {state.input.yesterday_workout_volume_lbs?.toLocaleString()} lbs
-                </span>
-              </>
+          <DataRow label="Nutrition">
+            {state.input.yesterday_calories === null ||
+            state.input.yesterday_protein_g === null ? (
+              <p className="font-display text-[30px] font-normal text-secondary">
+                Not logged
+              </p>
             ) : (
-              <span className="text-sm">None logged</span>
+              <div className="flex flex-col gap-1">
+                <p className="font-display text-[30px] font-normal text-primary">
+                  {state.input.yesterday_calories} cal
+                </p>
+                <p className="font-mono text-[13px] text-secondary">
+                  {state.input.yesterday_protein_g} g protein
+                </p>
+              </div>
             )}
-          </div>
+          </DataRow>
 
-          <div className="flex flex-col gap-1 border-t border-zinc-200 pt-3">
-            <span className="text-xs font-medium text-zinc-500">Short assessment</span>
-            <p>{state.shortAssessment}</p>
-          </div>
+          <DataRow label="Workout">
+            {state.input.yesterday_workout_present === 1 ? (
+              <div className="flex flex-col gap-1">
+                <p className="text-base text-primary">
+                  {state.yesterdayWorkoutNames.join(" · ")}
+                </p>
+                <p className="font-mono text-[13px] text-secondary">
+                  {state.input.yesterday_workout_volume_lbs?.toLocaleString()} lbs total
+                  volume
+                </p>
+              </div>
+            ) : (
+              <p className="text-base text-secondary">None logged</p>
+            )}
+          </DataRow>
 
-          <div className="flex items-baseline gap-2">
-            <span className="text-xs font-medium text-zinc-500">Overall grade</span>
-            <span className="text-2xl font-bold">{state.grade}</span>
-          </div>
+          <GradeDisplay grade={state.grade} assessment={state.shortAssessment} />
         </div>
       )}
     </div>

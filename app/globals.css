@@ -1,26 +1,64 @@
 @import "tailwindcss";
 
+/*
+ * Design tokens, registered in Tailwind v4's CSS-first `@theme` (this repo
+ * has no tailwind.config.js — see @tailwindcss/postcss in package.json —
+ * so tokens live here, not in a JS config). Everything inside `@theme` is
+ * both a real CSS variable (usable as `var(--color-surface)` anywhere)
+ * and a generated utility class (`bg-surface`, `text-secondary`,
+ * `font-display`, `rounded-card`, ...). Names are shorter than the
+ * `--color-text-secondary`-style names in the design brief so the
+ * generated utilities stay short too (Tailwind's naming rule is
+ * `--color-<name>` -> `bg-<name>`/`text-<name>`/etc, so a name that
+ * already contains "text-" would produce an awkward `text-text-secondary`
+ * utility).
+ */
+@theme {
+  /* Colors — warm dark palette. This is the entire palette; do not add a
+     fourth accent color anywhere in this app. */
+  --color-bg: #0f0e0c;
+  --color-surface: #191714;
+  --color-hairline: #2a2622;
+  --color-primary: #f5f1e8;
+  --color-secondary: #a8a19a;
+  --color-muted: #6e6862;
+  --color-gold: #e8b547;
+  --color-on-track: #4a6552;
+  --color-off-track: #b85e3f;
+
+  /* Typography. The raw next/font variables (--font-fraunces etc., set on
+     <html> in app/layout.tsx via app/fonts.ts) are aliased to semantic
+     names here, with system-font fallbacks. */
+  --font-display: var(--font-fraunces), Georgia, serif;
+  --font-body: var(--font-inter), system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, monospace;
+
+  /* Radii */
+  --radius-card: 16px;
+  --radius-inner: 12px;
+}
+
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Max content width, referenced via arbitrary-value Tailwind classes
+     (max-w-[var(--content-max)]) since Tailwind has no "container width"
+     utility namespace for this. No custom breakpoint tokens are defined:
+     Tailwind's default `sm:` (640px) and `lg:` (1024px) breakpoints
+     already match this design's tablet/desktop cutoffs exactly, and its
+     default spacing scale (p-1..p-16) already matches the 4px spacing
+     rhythm this design calls for, so both are used directly throughout
+     instead of being redefined here. */
+  --content-max: 680px;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
-
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
-
+html,
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  background: var(--color-bg);
+  color: var(--color-primary);
+  font-family: var(--font-body);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
+}
+
+* {
+  border-color: var(--color-hairline);
 }
