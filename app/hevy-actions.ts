@@ -3,7 +3,7 @@
 import { revalidatePath } from "next/cache";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
-import { fetchAllHevyWorkouts } from "@/lib/hevy/client";
+import { fetchRecentHevyWorkouts } from "@/lib/hevy/client";
 import {
   mapHevyWorkout,
   type MappedWorkout,
@@ -69,12 +69,14 @@ async function upsertWorkout(supabase: SupabaseClient, mapped: MappedWorkout) {
 }
 
 /**
- * Pulls every workout from Hevy for the signed-in user and upserts it into
- * Supabase. `user_id` is never sent — the database fills it in (default
- * `auth.uid()`) and Row-Level Security ensures a user can only ever write
- * their own rows. Safe to run repeatedly: re-syncing updates existing rows
- * instead of duplicating them. Returns the count synced so callers can
- * show a status message.
+ * Pulls the most recent page of workouts from Hevy for the signed-in user
+ * and upserts them into Supabase. `user_id` is never sent — the database
+ * fills it in (default `auth.uid()`) and Row-Level Security ensures a
+ * user can only ever write their own rows. Safe to run repeatedly:
+ * re-syncing updates existing rows instead of duplicating them. Only the
+ * most recent page is fetched (not a full resync) since this runs on
+ * every routine sync and older workouts are already in the database.
+ * Returns the count synced so callers can show a status message.
  */
 export async function syncHevyWorkouts(): Promise<{ workoutCount: number }> {
   const supabase = await createClient();
@@ -87,7 +89,7 @@ export async function syncHevyWorkouts(): Promise<{ workoutCount: number }> {
     throw new Error("You must be signed in to sync workouts.");
   }
 
-  const rawWorkouts = await fetchAllHevyWorkouts();
+  const rawWorkouts = await fetchRecentHevyWorkouts();
 
   for (const raw of rawWorkouts) {
     await upsertWorkout(supabase, mapHevyWorkout(raw));
