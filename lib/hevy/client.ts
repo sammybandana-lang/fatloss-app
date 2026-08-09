@@ -71,3 +71,16 @@ export async function fetchAllHevyWorkouts(): Promise<HevyRawWorkout[]> {
 
   return workouts;
 }
+
+/**
+ * Fetches only the single most recent page of workouts from Hevy (the API
+ * returns workouts newest-first), rather than paging through the caller's
+ * entire history. Used for routine syncs where only recently-logged
+ * workouts are expected to be new; `fetchAllHevyWorkouts` remains
+ * available for a full resync.
+ */
+export async function fetchRecentHevyWorkouts(): Promise<HevyRawWorkout[]> {
+  const apiKey = getApiKey();
+  const result = await fetchWorkoutsPage(apiKey, 1);
+  return result.workouts;
+}
