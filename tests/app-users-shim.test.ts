@@ -25,6 +25,7 @@ config({ path: ".env.local" });
 
 const URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const ANON_KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!;
+const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 afterAll(deleteTestUsers);
 
@@ -173,5 +174,65 @@ describe("owner stamping — the column defaults on the shim", () => {
 
     expect(error).toBeNull();
     expect(data?.user_id).toBe(user.id);
+  }, 30000);
+});
+
+/**
+ * Phase 2 step 3 — see
+ * supabase/migrations/20260814170000_phase2_repoint_fks_to_app_users.sql.
+ *
+ * That migration moves every table's owner reference from auth.users to
+ * app_users, which lengthens the delete chain by one hop:
+ *
+ *     auth.users -> app_users -> measurements
+ *
+ * If the middle link were ever created without "on delete cascade",
+ * deleting an account would stop removing that person's health data. It
+ * would not error — the rows would simply stay behind, owned by an
+ * account that no longer exists. A real "delete my account" request
+ * would silently leave the data in place.
+ *
+ * Needs the service-role key to delete a user and then to look for rows
+ * that RLS would otherwise hide.
+ */
+describe.skipIf(!SERVICE_KEY)("deleting an account still removes the data", () => {
+  it("cascades through app_users to the data tables", async () => {
+    const user = await newTestUser();
+    const admin = createClient(URL, SERVICE_KEY!, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+
+    const { error: insErr } = await user.client
+      .from("measurements")
+      .insert({ weight_lbs: 149.9 });
+    expect(insErr).toBeNull();
+
+    // Confirm the row is really there before deleting, so a false pass
+    // cannot come from having inserted nothing in the first place.
+    const { data: before } = await admin
+      .from("measurements")
+      .select("id")
+      .eq("user_id", user.id);
+    expect((before ?? []).length).toBeGreaterThan(0);
+
+    const { error: delErr } = await admin.auth.admin.deleteUser(user.id);
+    expect(delErr).toBeNull();
+
+    // Both hops of the chain: the account row, and the data behind it.
+    const { data: appUserRows } = await admin
+      .from("app_users")
+      .select("id")
+      .eq("id", user.id);
+    expect(appUserRows ?? []).toHaveLength(0);
+
+    const { data: after } = await admin
+      .from("measurements")
+      .select("id")
+      .eq("user_id", user.id);
+    expect(after ?? []).toHaveLength(0);
+
+    // Note: afterAll will try to delete this user again and print a
+    // harmless "could not delete user" warning. Expected — the helper
+    // warns rather than throws for exactly this kind of case.
   }, 30000);
 });
