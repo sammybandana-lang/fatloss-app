@@ -1,16 +1,24 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { createClient } from "@/lib/supabase/server";
+import { requireCurrentUserId } from "@/lib/auth/current-user";
+import { withUser } from "@/lib/db";
 import {
   parseOptionalPositiveNumber,
   parseRequiredPositiveNumber,
 } from "@/lib/measurements";
 
 /**
- * Adds one measurement for the signed-in user. `user_id` is not sent here —
- * the database fills it in automatically (default `auth.uid()`), and
- * Row-Level Security ensures a user can only ever insert their own row.
+ * Adds one measurement for the signed-in user.
+ *
+ * `user_id` is still not sent: the column's default fills it in, and
+ * Row-Level Security independently rejects a row belonging to anyone
+ * else. What changed in the Azure migration (Phase 3) is where the
+ * database gets the answer from — `app_current_user_id()` reads the
+ * identity that `withUser` stamped onto this transaction, rather than
+ * Supabase reading it from the request. The guarantee is the same; the
+ * plumbing is ours now.
+ *
  * Weight is required; the rest are optional and stored as NULL when blank.
  */
 export async function addMeasurement(formData: FormData) {
@@ -35,18 +43,17 @@ export async function addMeasurement(formData: FormData) {
     "neck measurement",
   );
 
-  const supabase = await createClient();
-  const { error } = await supabase.from("measurements").insert({
-    weight_lbs: weightLbs,
-    body_fat_pct: bodyFatPct,
-    waist_in: waistIn,
-    hips_in: hipsIn,
-    neck_in: neckIn,
-  });
+  // Read from the verified session, never from the form — a form can
+  // claim to be anyone.
+  const userId = await requireCurrentUserId();
 
-  if (error) {
-    throw new Error(error.message);
-  }
+  await withUser(userId, (tx) =>
+    tx.query(
+      `insert into measurements (weight_lbs, body_fat_pct, waist_in, hips_in, neck_in)
+       values ($1, $2, $3, $4, $5)`,
+      [weightLbs, bodyFatPct, waistIn, hipsIn, neckIn],
+    ),
+  );
 
   // Refresh both the measurements page (where this form lives) and the
   // dashboard (which shows the latest measurement in its Current Stats tile).

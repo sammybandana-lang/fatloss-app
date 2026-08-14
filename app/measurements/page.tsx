@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
+import { getCurrentUserId } from "@/lib/auth/current-user";
+import { withUser } from "@/lib/db";
+import { numberOrNull, requiredNumber } from "@/lib/db/rows";
 import { addMeasurement } from "@/app/actions";
 import { PageShell } from "@/app/_components/design/PageShell";
 import { Card } from "@/app/_components/design/Card";
@@ -8,27 +10,49 @@ import { Card } from "@/app/_components/design/Card";
 const inputClass =
   "rounded-inner border-[0.5px] border-hairline bg-transparent px-4 py-3 text-sm text-primary focus:border-gold focus:outline-none";
 
+interface MeasurementRow {
+  id: string;
+  weight_lbs: number;
+  body_fat_pct: number | null;
+  waist_in: number | null;
+  hips_in: number | null;
+  neck_in: number | null;
+  created_at: Date;
+}
+
 export default async function MeasurementsPage() {
-  const supabase = await createClient();
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
   // Real "must be signed in" check — runs on the server against the
   // verified session, never trusting the screen.
-  if (!user) {
+  const userId = await getCurrentUserId();
+
+  if (!userId) {
     redirect("/login");
   }
 
-  const { data: measurements, error } = await supabase
-    .from("measurements")
-    .select("id, weight_lbs, body_fat_pct, waist_in, hips_in, neck_in, created_at")
-    .order("created_at", { ascending: false });
+  // Every row this returns is the caller's own, enforced by the database
+  // rather than by the `where` clause of this query — which is why there
+  // isn't one. See lib/db/index.ts.
+  const measurements = await withUser(userId, async (tx) => {
+    const { rows } = await tx.query(
+      `select id, weight_lbs, body_fat_pct, waist_in, hips_in, neck_in, created_at
+         from measurements
+        order by created_at desc`,
+    );
 
-  if (error) {
-    throw new Error(error.message);
-  }
+    // numeric columns arrive as strings from node-postgres — converted
+    // here, once, rather than left to each place that displays them.
+    return rows.map(
+      (row): MeasurementRow => ({
+        id: row.id,
+        weight_lbs: requiredNumber(row.weight_lbs),
+        body_fat_pct: numberOrNull(row.body_fat_pct),
+        waist_in: numberOrNull(row.waist_in),
+        hips_in: numberOrNull(row.hips_in),
+        neck_in: numberOrNull(row.neck_in),
+        created_at: row.created_at,
+      }),
+    );
+  });
 
   return (
     <PageShell>
