@@ -1239,6 +1239,22 @@ last lines of defense, not the first.
 
 ### 6.5 Anthropic data handling — explicit accepted risk (Decision 2, F-008)
 
+> **⚠ SUPERSEDED BY WHAT WAS ACTUALLY BUILT (noted 2026-08-14, §10.8 R-1).**
+> This section accepts a risk that does not exist. The implementation never
+> used Anthropic: `lib/ai/llm-client.ts` calls **Azure OpenAI** (`AzureOpenAI`
+> from the `openai` package), and `package.json` has no Anthropic dependency.
+> The "multi-user version routes through Azure OpenAI" outcome described at
+> the bottom of this section is what shipped, immediately, for the
+> single-user MVP.
+>
+> Left in place rather than rewritten: this is reviewed content, and the
+> reviewer's finding F-008 and Sam's Decision 2 were both real events. What
+> is stale is the premise, not the record. **Anything relying on this section
+> must re-verify against `lib/ai/llm-client.ts` first.** Two open items below
+> do survive the correction, because they were never about Anthropic
+> specifically: the field-minimization rule (§6.0) and the unbounded
+> retention of `raw_input_snapshot` / `raw_provider_response`.
+
 **This is a business/privacy decision recorded here at Sam's direction,
 not an architecture judgment.** Every day, the cron sends the numeric
 fields in §6.0 — body weight, body-fat percentage, waist/hips/neck,
@@ -1532,7 +1548,7 @@ So the migration reduces to one central task: **replace those three seams
 with portable equivalents — and do it while still running on Supabase, so
 the isolation tests prove the replacement before the host ever changes.**
 That single decision is what makes the rest of this plan low-risk, and it
-is the reason §10.5 orders the phases the way it does.
+is the reason §10.4 orders the phases the way it does.
 
 **The trap this creates (call it out loudly, per CLAUDE.md's "the database
 is the safety net"):** in stock PostgreSQL, **the table owner bypasses RLS
@@ -1541,7 +1557,7 @@ the owner. On Azure, if the application role is also the role that created
 the tables, *every RLS policy in this document silently stops applying* and
 nothing visibly fails. Mitigation is mandatory and non-negotiable:
 `alter table <t> force row level security;` on every table, plus an
-application role that is **not** the owner. §10.8 makes this a test, not a
+application role that is **not** the owner. §10.7 makes this a test, not a
 note.
 
 ### 10.1 Component mapping
@@ -1551,12 +1567,12 @@ ASSUMPTION on every Azure product name, tier, and limit below.
 | # | Today | Azure equivalent | What actually changes | Notes / risk |
 | --- | --- | --- | --- | --- |
 | 1 | **Vercel** (Next.js hosting) | **Azure App Service**, Linux, Node LTS | `next build` with `output: "standalone"`; a startup command instead of zero-config deploy | Lose: global edge CDN, automatic image optimization, preview deployments. Regain via **Azure Front Door** (CDN/WAF/TLS) and **deployment slots** (preview + blue-green). Gains a **system-assigned managed identity**, which is the whole point |
-| 2 | **Supabase PostgreSQL** | **Azure Database for PostgreSQL Flexible Server** | Host, connection string, auth method. Schema moves as-is except the three seams in §10.0 | Match the current major version on the first hop — do not combine a version upgrade with a platform move. Enable the **built-in PgBouncer**; see §10.7 for why this is not optional with Functions |
+| 2 | **Supabase PostgreSQL** | **Azure Database for PostgreSQL Flexible Server** | Host, connection string, auth method. Schema moves as-is except the three seams in §10.0 | Match the current major version on the first hop — do not combine a version upgrade with a platform move. Enable the **built-in PgBouncer**; see §10.6 #3 for why this is not optional with Functions |
 | 3 | **Supabase Auth** (GoTrue) | See §10.2 — recommended: **Entra External ID** as IdP + **Auth.js** as the Next.js OIDC client | `signInWithPassword`/`signUp`/`signOut` replaced; all 12 `auth.getUser()` call sites become one session helper | Smaller than it looks: FACT — only those three auth operations exist in the codebase; no social login, no magic links, no MFA in use today |
 | 4 | **trigger.dev** (daily job) | **Azure Functions**, Timer trigger (NCRONTAB) | `trigger/*.ts` task definition → a Function with a timer binding; job body largely unchanged | Consumption plan has a hard execution timeout and **no VNet integration** (ASSUMPTION) — with a private-endpoint Postgres you need **Flex Consumption or Premium**. trigger.dev's built-in retry/replay/observability has no free equivalent: use **Durable Functions** if you want orchestration, or accept "the timer fires again tomorrow" |
-| 5 | **Env vars in Vercel + trigger.dev dashboards** | **Azure Key Vault** + **Managed Identity** | `process.env.X` → Key Vault reference (App Service/Functions app setting) or SDK fetch at startup | This is the catalog's Level 2 → Level 3/4 jump (SAAS_REFERENCE_CATALOG §2). See §10.6 #3 — one of these secrets **ceases to exist entirely**, which is a real security win, not a lateral move |
+| 5 | **Env vars in Vercel + trigger.dev dashboards** | **Azure Key Vault** + **Managed Identity** | `process.env.X` → Key Vault reference (App Service/Functions app setting) or SDK fetch at startup | This is the catalog's Level 2 → Level 3/4 jump (SAAS_REFERENCE_CATALOG §2). See §10.5 #3 — one of these secrets **ceases to exist entirely**, which is a real security win, not a lateral move |
 | 6 | **supabase-js** (`@supabase/supabase-js`, `@supabase/ssr`) | **`pg`** (node-postgres) behind a small `lib/db/` wrapper | `.from().select()` / `.rpc()` → parameterized SQL | The largest volume of code change in the whole migration, and the least conceptually interesting. Mechanical, well-covered by existing tests |
-| 7 | **Supabase Studio** (operator writes) | **No equivalent** | `psql` / pgAdmin over the private endpoint, or a small admin CLI | **This breaks documentation, not just tooling** — §2.4, §2.5, and §8 all name Studio as the operator write path for `trainer_recipients` and `app_settings`. See §10.6 #5 |
+| 7 | **Supabase Studio** (operator writes) | **No equivalent** | `psql` / pgAdmin over the private endpoint, or a small admin CLI | **This breaks documentation, not just tooling** — §2.4, §2.5, and §8 all name Studio as the operator write path for `trainer_recipients` and `app_settings`. See §10.5 #5 |
 | 8 | **Supabase CLI migrations** | Raw SQL + a runner (node-pg-migrate, Flyway, or sqitch) in **GitHub Actions** | `supabase db push` → a migration step in CI | Keep the existing `supabase/migrations/*.sql` files and their timestamps; only the applier changes. Preserves CLAUDE.md's "edit a tracked file, test on practice first" rule |
 | 9 | **`supabase start`** (local dev) | Docker Postgres + the same migration runner | A `docker-compose.yml` and a seed script | Also needs a local auth story — see §10.2 |
 | 10 | **Vercel / trigger.dev logs** | **Application Insights** | `lib/log.ts` unchanged; the sink changes | §3's F-009 redaction discipline matters **more** here: App Insights is queryable and retained by policy, so a leaked prompt body is more durable than it was in a rolling platform log |
@@ -1720,7 +1736,7 @@ those live only in §2's design. The one definer function that now exists is
 - `lib/supabase/client.ts`, `server.ts`, `proxy.ts`, `service.ts` → `lib/db/*`
 - `app/login/actions.ts` → Auth.js route handlers
 - `tests/isolation.test.ts` and `tests/helpers/test-users.ts` — must be
-  **rewritten first, not last** (§10.5 Phase 2). They are the only
+  **rewritten first, not last** (§10.4 Phase 2). They are the only
   artifact that proves the shim is correct.
 
 ### 10.4 Migration sequence
@@ -1756,7 +1772,7 @@ from a risky big-bang into a sequence of individually reversible changes.
 | 4 | **GoTrue** | Signup, login, logout, sessions, password reset, email verification, auth-endpoint rate limiting | The IdP (§10.2). Note password reset and email verification are **not currently wired** (FACT) — the IdP supplies them, so this is net new capability |
 | 5 | **Supabase Studio** | **The documented operator write path** for `trainer_recipients` and `app_settings` — §2.4, §2.5, and §8 all name it | No Azure equivalent. Needs `psql`/pgAdmin over the private endpoint, or a small admin CLI running as `app_job`. **§2.4, §2.5, and §8 become factually wrong the day Studio goes away** and must be edited in the same PR as Phase 4 |
 | 6 | **PostgREST** | The auto-generated REST API behind supabase-js, and `.rpc()` | We write SQL. Covered by Phase 3 |
-| 7 | **Supavisor** (pooling) | Connection pooling, free and invisible | Flexible Server's built-in PgBouncer, **explicitly enabled**. Not optional — see §10.7 |
+| 7 | **Supavisor** (pooling) | Connection pooling, free and invisible | Flexible Server's built-in PgBouncer, **explicitly enabled**. Not optional — see §10.6 #3 |
 | 8 | **Automatic backups / PITR** | On by default | Flexible Server backups + PITR, with retention **explicitly configured**. Also: CLAUDE.md requires separate practice and real environments — that means **two** servers, and the cost line doubles |
 | 9 | **`supabase start`** | One-command local stack | Docker Postgres + migration runner + a local auth story (Entra External ID has no local emulator — ASSUMPTION; likely a dev-only Auth.js credentials provider, which must never be reachable in production builds) |
 | 10 | **Supabase CLI migrations** | `db push` with tracked SQL files | A runner in CI. The tracked-file workflow CLAUDE.md mandates survives intact |
@@ -1802,24 +1818,78 @@ cover:
 | Managed identity, no static creds | Static/CI | No connection string with a password, and no `SUPABASE_SERVICE_ROLE_KEY`, exists in any app setting or repo file after Phase 7 |
 | Guard trigger role branch | Integration | §2.2's trigger, rewritten to `current_user = 'app_job'`, is observed under both roles — same "observed, not assumed" standard F-007 established |
 
-### 10.8 Open questions for Sam — answer before Phase 0
+### 10.8 Decisions — resolved
+
+**R-1. Azure OpenAI is already in production. No decision needed — this
+question was stale when it was written.** FACT, verified by reading
+`lib/ai/llm-client.ts`: the daily job calls `AzureOpenAI` from the `openai`
+package, configured by `AZURE_OPENAI_ENDPOINT` / `_API_KEY` / `_DEPLOYMENT`
+/ `_API_VERSION`. There is no Anthropic dependency in `package.json` and no
+Anthropic call anywhere in the codebase.
+
+Two consequences:
+
+- **§6.5 is stale and is marked as such at that section.** Its accepted-risk
+  ruling ("health data goes to Anthropic's public commercial API") describes
+  code that was never built. The risk it accepted does not exist.
+- Part of this stack is **already Azure**, which removes an entire class of
+  migration risk: the LLM call needs no adapter swap, no new credential, and
+  no re-verification. It is Tier 1 in §10.3 — genuinely untouched.
+
+**R-2. Region: accepted without a data-residency analysis — Sam's ruling,
+scoped exception (2026-08-14).**
+
+CLAUDE.md puts data residency in the "be extra careful — ask me first"
+list because this holds personal health numbers. Sam has ruled that the
+analysis is not required here, on the same reasoning §6.5 uses: under
+§0.1's single-user constraint the only data subject is Sam, and the person
+accepting the risk is the person the data is about. Recorded, per the
+Working-with-Claude rules, as an explicit exception rather than absorbed
+silently.
+
+Conditions, mirroring the F-012 waiver's structure in §2:
+
+1. **Scoped to the single-user MVP.** The moment a second real user exists,
+   this exception lapses and a residency decision is required before their
+   data lands anywhere — a multi-tenant product does not get to make that
+   call on other people's behalf.
+2. **Covers residency only.** It is not a waiver of encryption, private
+   networking, or any other control in §10.6.
+3. **Revisit alongside §0.1**, not independently — the two are the same
+   decision viewed from different angles.
+
+**Choosing the value is still an engineering decision, and it is close to
+irreversible:** a Flexible Server cannot change region in place, so getting
+it wrong means dump, restore, re-point, redeploy. Two inputs:
+
+- **Co-locate with the existing Azure OpenAI resource.** That deployment
+  already exists and the daily job calls it every run; same-region keeps the
+  hop short and avoids cross-region egress. Check its region before
+  provisioning anything else — it is the only real constraint left.
+- **Otherwise `eastus2`.** The job runs on `America/New_York` and
+  `lib/dates.ts` is Eastern, so the user is East Coast; East US 2 has wider
+  service availability and better quota for newer SKUs than East US.
+
+**R-3. Budget: the migration itself is free.** Verified on Microsoft Learn:
+the Azure free account gives "$200 Azure credit... for the first 30 days and
+a limited quantity of free services for 12 months," and when the credit
+expires the subscription is **disabled rather than billed** — it fails
+closed. The lean setup in §10.1 runs well inside $200 for a month, so
+Phases 0–8 cost nothing if completed within the window. Steady-state after
+that is roughly $40/month for the live environment, with practice running
+locally in Docker (which §10.1 #9 requires anyway).
+
+### 10.9 Open questions for Sam — still unanswered
 
 1. **Does the single-user gate (§0.1) survive the migration?** Recommendation:
    **yes, unchanged.** Multi-user is a genuinely different problem
    (`user_connections`, per-user OAuth) and combining it with a platform
-   move violates CLAUDE.md's "one change at a time."
-2. **Azure OpenAI now or later?** §6.5 names Azure OpenAI + BAA as the
-   multi-user path, and being on Azure makes that adapter cheap.
-   Recommendation: **later** — it is a `AssessmentProvider` port swap that
-   can happen any day after Phase 8, and doing it during the migration
-   adds a variable for no schedule benefit.
-3. **Entra External ID vs Auth0** (§10.2) — confirm the recommended pairing.
-4. **Region and data residency** — this holds personal health numbers;
-   CLAUDE.md's "be extra careful" list applies.
-5. **Budget.** Flexible Server + App Service + Front Door + Key Vault,
-   **times two environments** (practice and real, per CLAUDE.md), is
-   materially more than Vercel + Supabase free tiers. Worth a real number
-   before Phase 0, not after.
+   move violates CLAUDE.md's "one change at a time." This is a
+   do-nothing default, so it blocks no phase — but it should be said out
+   loud rather than assumed.
+2. **Entra External ID vs Auth0** (§10.2) — confirm the recommended pairing
+   (Entra as the identity provider, Auth.js as the Next.js client). **Blocks
+   Phase 5, nothing earlier.**
 
 ---
 
