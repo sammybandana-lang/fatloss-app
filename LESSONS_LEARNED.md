@@ -16,11 +16,15 @@ The single largest source of production incidents in this project. Every one of 
 - **Lesson:** "The migration is in the repo" and "the migration is applied to prod" are two separate things. Manually running `db push` against the right project after every merge is an unreliable process — the failure mode is silent (nothing complains until users hit the missing table).
 - **Apply going forward:** On Phalanx, CI must apply migrations automatically on merge to `main`. Deployment must refuse to promote if migrations are pending. Manual `db push` is a workflow for exceptional cases, not the primary path.
 
+
+
 ### Env vars must be treated as infrastructure config that drifts
 
-- **What happened:** Same production outage — after the migration was applied, the feature still failed because the three `GMAIL_*` env vars were in local `.env.local` but had never been added to Vercel's production environment.
+- **What happened:** Same production outage — after the migration was applied, the feature still failed because the three `GMAIL_`* env vars were in local `.env.local` but had never been added to Vercel's production environment.
 - **Lesson:** Every new secret added locally represents an infrastructure change that must be replicated to every environment (Preview, Production, staging, etc.). There is no automatic reminder.
 - **Apply going forward:** Either (a) use a secrets manager where dev and prod pull from the same source of truth, or (b) maintain an env-var manifest in the repo that CI diffs against the deployment platform and fails if any are missing. A checklist item on every PR that adds a new env var.
+
+
 
 ### "CI passed" ≠ "production works"
 
@@ -28,16 +32,22 @@ The single largest source of production incidents in this project. Every one of 
 - **Lesson:** The gap between "CI passed" and "prod works" is real and needs its own check. CI validates the code artifact. It does not validate the environment the artifact runs in.
 - **Apply going forward:** Add a post-deploy smoke test that hits critical prod endpoints and fails the deploy if they return errors. On Phalanx: a health check that exercises at least one query per critical table and one call per critical external integration after every deploy.
 
+
+
 ### Redeploying alone does not always re-inject env vars
 
 - **What happened:** After adding env vars to Vercel and clicking Redeploy, the running production build still saw them as unset.
 - **Lesson:** Env vars added after a deployment don't automatically apply to it. Even a redeploy sometimes needs "Use existing Build Cache" *unchecked* to fully take effect.
 - **Apply going forward:** After any env var change, redeploy explicitly with build cache cleared. Verify by hitting an endpoint that reads the new var, not by trusting the "Ready" status.
-- **Source cited during troubleshooting:** https://vercel.com/kb/guide/how-to-add-vercel-environment-variables
+- **Source cited during troubleshooting:** [https://vercel.com/kb/guide/how-to-add-vercel-environment-variables](https://vercel.com/kb/guide/how-to-add-vercel-environment-variables)
 
 ---
 
+
+
 ## CI/CD pipeline
+
+
 
 ### Billing budgets are a suspect when CI silently dies — but so are vendor outages, and correlation isn't causation
 
@@ -47,6 +57,8 @@ The single largest source of production incidents in this project. Every one of 
   - **A fix that "worked" is not necessarily the fix that worked.** In this case, two fixes were applied that didn't do anything, followed by an external resolution we had nothing to do with. The natural narrative — "we did work, then it resolved, therefore our work fixed it" — is exactly wrong.
 - **Apply going forward:** When CI silently dies, check *both* billing budgets *and* the vendor's status page. Note both possible causes in the incident record. If you apply a fix and the problem doesn't resolve *immediately*, that fix is not the answer — keep looking. Public repos on GitHub get free unlimited Actions minutes, so a $0 budget on a public repo is safe to delete regardless of the incident.
 
+
+
 ### Required status checks and workflow files are independent
 
 - **What happened:** Confusion during the CI outage about why workflows were running on some PRs but not others — an assumption that a deleted "required status check" in the ruleset would prevent CI from firing.
@@ -54,6 +66,8 @@ The single largest source of production incidents in this project. Every one of 
   - Workflow file (`.github/workflows/*.yml`) — its `on:` trigger decides when CI **runs**.
   - Ruleset "required status check" — decides whether a green result is **mandatory to merge**.
 - **Apply going forward:** When CI behavior surprises, be precise about which system you're changing. Removing a required check does not stop CI from running. Deleting a workflow file does not remove it from ruleset requirements.
+
+
 
 ### Runtime logs are different from build logs
 
@@ -63,7 +77,11 @@ The single largest source of production incidents in this project. Every one of 
 
 ---
 
+
+
 ## Git hygiene
+
+
 
 ### Never push directly to `main`
 
@@ -71,12 +89,16 @@ The single largest source of production incidents in this project. Every one of 
 - **Lesson:** Local `main` should always mirror `origin/main`. Any commit intended for `main` goes through a PR. The ruleset enforces this at push time — but if a commit is made locally to `main` and then rejected on push, it still sits on local `main` and needs cleanup.
 - **Apply going forward:** Feature work always starts with `git checkout -b <branch>` from clean `main`. If a rejected local commit exists, `git reset --hard origin/main` clears it before starting new work.
 
+
+
 ### `git rebase --onto` cleanly drops unwanted commits from history
 
 - **What happened:** An empty commit was accidentally on both local `main` and a feature branch. Rebasing the feature branch with `git rebase --onto origin/main <bad-commit>` moved the branch cleanly onto real `main` without the empty commit.
 - **Lesson:** `--onto` lets you replay commits onto a chosen base while excluding an intermediate commit. Non-obvious but powerful.
 - **Apply going forward:** For history repair before pushing, prefer `--onto` to interactive rebase (which opens Vim and has caused past problems).
-- **Source cited during troubleshooting:** https://git-scm.com/docs/git-rebase
+- **Source cited during troubleshooting:** [https://git-scm.com/docs/git-rebase](https://git-scm.com/docs/git-rebase)
+
+
 
 ### Batch remote branch deletes are not atomic
 
@@ -84,11 +106,15 @@ The single largest source of production incidents in this project. Every one of 
 - **Lesson:** When a batched git push contains any invalid ref, the whole push can abort. Behavior is inconsistent across git versions and not documented as reliably atomic.
 - **Apply going forward:** Before batch-deleting, run `git fetch --prune` first to sync tracking refs with the remote reality. Or delete in smaller batches. Or accept the "some failed, retry the rest" pattern.
 
+
+
 ### Enable "auto-delete branch on merge"
 
 - **What happened:** 13 stale merged branches had accumulated on GitHub over the project's lifetime. Cleanup took a full round of coordinated deletes.
 - **Lesson:** GitHub's default doesn't auto-delete merged branches; they pile up until someone cleans them.
 - **Apply going forward:** Enable the "Automatically delete head branches" setting in repo Settings → General. From that point, every merge auto-cleans its own branch.
+
+
 
 ### Avoid Vim for commit messages
 
@@ -98,13 +124,19 @@ The single largest source of production incidents in this project. Every one of 
 
 ---
 
+
+
 ## Supabase CLI / database operations
+
+
 
 ### The CLI link target is the single most dangerous variable
 
 - **What happened:** The CLI was found linked to prod during development on multiple occasions. A stray `supabase db push` would have hit production.
 - **Lesson:** `supabase db push` operates on whatever project the CLI is currently linked to. The link persists between commands and sessions. There is no confirmation prompt showing which project you're about to affect.
-- **Apply going forward:** **Always run `supabase projects list` before any `db` command.** Confirm the ● is where you expect. After any intentional prod push, immediately relink to dev and verify. Add this to any team runbook.
+- **Apply going forward:** **Always run** `supabase projects list` **before any** `db` **command.** Confirm the ● is where you expect. After any intentional prod push, immediately relink to dev and verify. Add this to any team runbook.
+
+
 
 ### Verify the applied migration list before pushing to production
 
@@ -114,14 +146,20 @@ The single largest source of production incidents in this project. Every one of 
 
 ---
 
+
+
 ## Security review discipline
+
+
 
 ### Substring matching on headers is bypassable
 
 - **What happened:** The first version of the Gmail sender-verification check used `from.includes("donotreply@loseit.com")`. This is bypassable via display-name spoofing — a From header like `"donotreply@loseit.com" <attacker@evil.com>` has the trusted string in the display name (attacker-controlled free text), so `.includes()` matches while the real address is attacker's.
 - **Lesson:** For sender/identity checks, extract the actual structured field and compare with **exact equality**, never substring match. Real-world attackers exploit exactly this pattern.
 - **Apply going forward:** For any identity check on a structured value (email address, domain, sender ID, token subject): parse to the actual field, exact-match. Substring matching is the anti-pattern.
-- **Source cited during review:** https://en.wikipedia.org/wiki/Email_address (RFC 5322 display-name format and spoofing)
+- **Source cited during review:** [https://en.wikipedia.org/wiki/Email_address](https://en.wikipedia.org/wiki/Email_address) (RFC 5322 display-name format and spoofing)
+
+
 
 ### RLS presence ≠ RLS enforcement
 
@@ -129,11 +167,15 @@ The single largest source of production incidents in this project. Every one of 
 - **Lesson:** From the security-reviewer role's own words: "owner_id present is not owner_id enforced." Enabling RLS alone denies everything by default; the policies define what's actually allowed. UPDATE without `with check` allows a row to change ownership silently.
 - **Apply going forward:** For every table with RLS, verify all four CRUD paths have policies. UPDATE policies need both `using` and `with check`. Test isolation with a two-user integration test.
 
+
+
 ### Verify against docs, not "empirical verification"
 
 - **What happened:** Cursor claimed a PapaParse behavior was "verified empirically." The claim happened to be correct — but empirical verification against test fixtures doesn't cover edge cases (empty lines, unusual delimiters). Confirmed against official docs before accepting.
 - **Lesson:** "It worked in my test" is not the same as "the documented behavior guarantees this." AI code-generation tools frequently make empirical claims when documentation exists.
 - **Apply going forward:** For any non-obvious library behavior AI code depends on, cite the actual docs. Especially for security-critical code. This aligns with the project's citation discipline.
+
+
 
 ### Independent adversarial review works — but the reviewer must attack, not agree
 
@@ -143,7 +185,11 @@ The single largest source of production incidents in this project. Every one of 
 
 ---
 
+
+
 ## AI-assisted development discipline
+
+
 
 ### AI-generated constraints are often invented
 
@@ -151,11 +197,15 @@ The single largest source of production incidents in this project. Every one of 
 - **Lesson:** AI tools sometimes fabricate constraints that let them avoid harder work. Read AI justifications skeptically — especially when they explain why a *worse* choice was made.
 - **Apply going forward:** When AI says "I can't do X because Y" — verify Y is real. Especially when Y sounds like a rule you didn't set.
 
+
+
 ### Trust but verify — every claim, every time
 
 - **What happened:** Cursor consistently produced good code but also consistently made claims that needed checking. The `.includes()` sender bug was in code Cursor described as "security gate."
 - **Lesson:** AI-generated code quality is genuinely improving, but reviewer discipline must not weaken with it. Claims like "I checked" and "I verified" are hypotheses to test, not facts.
 - **Apply going forward:** Read the code, don't just read the summary. Especially at trust boundaries.
+
+
 
 ### AI tends toward inconsistency more than verbosity
 
@@ -163,11 +213,15 @@ The single largest source of production incidents in this project. Every one of 
 - **Lesson:** Contrary to intuition, AI code isn't especially verbose; it's inconsistent. Every new file becomes its own island unless the prompt actively enforces consistency with existing code.
 - **Apply going forward:** Reference existing files in every spec ("match the pattern in `hevy-actions.ts`"). Review specifically for consistency, not just correctness.
 
+
+
 ### Cursor writes to `main` by default
 
 - **What happened:** Cursor's default behavior places its changes on whatever branch happens to be checked out, which is `main` if you haven't branched first.
 - **Lesson:** The IDE agent has no awareness of Git workflow — it just edits files where the terminal points.
 - **Apply going forward:** Every session begins with `git checkout -b <branch>` before invoking the agent. Verify with `git branch --show-current`.
+
+
 
 ### User-provided ground truth must be diffed field-by-field, not pattern-matched
 
@@ -177,7 +231,11 @@ The single largest source of production incidents in this project. Every one of 
 
 ---
 
+
+
 ## Testing discipline
+
+
 
 ### Unit tests with mocked externals prove less than they seem to
 
@@ -185,17 +243,23 @@ The single largest source of production incidents in this project. Every one of 
 - **Lesson:** Mocked tests prove the code handles the shapes you gave the mocks. Real data is always weirder than the mocks. Unit tests are necessary but not sufficient.
 - **Apply going forward:** For every parser, ingestion action, or format-handling piece of code: include at least one test fixture that contains **real production bytes** (redacted if needed). Not hand-crafted samples of what the real data probably looks like — actual bytes from an actual source.
 
+
+
 ### Live test in dev before merging, always
 
 - **What happened:** Pushback on merging without a dev test caught the Exercise-row parser bug. Without that pushback, the bug would have hit prod (and did, briefly, until we rolled back).
 - **Lesson:** "The tests pass" is not the same as "I clicked the button and watched it work." Every user-facing feature needs at least one live click-through in dev before merging.
 - **Apply going forward:** Institutionalize "click-through-in-dev" as a required step. On Phalanx, this may be a preview-environment smoke test rather than localhost.
 
+
+
 ### Run the four checks locally even when CI works
 
 - **What happened:** Local `tsc`, `lint`, `build`, and `test` before every push saved multiple round-trips to CI. Feedback loop is ~5 seconds locally vs ~45 seconds on CI.
 - **Lesson:** CI is a backstop, not the primary check. The 45-second cost adds up; more importantly, it's noise in the reviewer's inbox when it fails.
 - **Apply going forward:** Local checks are non-negotiable before any push. `npm run typecheck && npm run lint && npm run build && npm test`. Or automate as a pre-push git hook.
+
+
 
 ### The `test` output is untrusted output
 
@@ -205,7 +269,11 @@ The single largest source of production incidents in this project. Every one of 
 
 ---
 
+
+
 ## Incident response
+
+
 
 ### Rollback first, diagnose second
 
@@ -213,11 +281,15 @@ The single largest source of production incidents in this project. Every one of 
 - **Lesson:** Restoring service and finding the root cause are separate priorities. Service restoration wins on time. Diagnosis wins on preventing recurrence.
 - **Apply going forward:** Practice rollback until it's muscle memory. On Phalanx, the runbook's first step for any prod alert is: promote previous deployment. Then investigate.
 
+
+
 ### Vercel's manual promotion is a sticky override
 
 - **What happened:** After rolling back and later un-sticking (via a fresh un-cached redeploy), auto-deploy on main-push behavior was restored. But had that step been missed, the next merged PR would have built successfully but never appeared in production.
 - **Lesson:** Manual production promotion in Vercel pauses auto-deploy. Auto-deploy resumes when you either promote a newer deployment or explicitly re-enable auto-deploy in project settings.
 - **Apply going forward:** After any rollback, un-stick auto-deploy before the next PR merges. Otherwise the next deployment silently fails to reach production.
+
+
 
 ### Root cause attribution requires evidence, not correlation
 
@@ -229,6 +301,8 @@ The single largest source of production incidents in this project. Every one of 
   - **Coincidental:** the fix and the resolution happened at the same time but no mechanism connects them, or the fix had no observable effect at all.
   Never write a "plausible" or "coincidental" fix up as "confirmed." When in doubt, write down both what you did and what happened externally at the same time.
 
+
+
 ### Runtime logs beat guessing
 
 - **What happened:** Multiple diagnostic hypotheses ("cache issue," "browser problem," "CDN staleness") were speculated before the real cause (missing DB table, missing env vars) was found in the runtime logs.
@@ -237,7 +311,11 @@ The single largest source of production incidents in this project. Every one of 
 
 ---
 
+
+
 ## Architecture / multi-tenant patterns
+
+
 
 ### RLS at the identity level is the transferable seam
 
@@ -245,11 +323,15 @@ The single largest source of production incidents in this project. Every one of 
 - **Lesson:** Row-Level Security at the DB layer, keyed to whatever "tenant" means in your domain, is the seam that survives every application-layer change.
 - **Apply going forward:** On Phalanx, RLS at `account_id` (or equivalent). Every table has it. Every policy covers all four CRUD paths. Every table's isolation is proven by a two-tenant integration test.
 
+
+
 ### Ports/adapters for every external dependency
 
 - **What happened:** The Gmail client, Hevy client, and (implicitly) the Supabase client all live behind their own interface. Swapping a provider is a new adapter, not a rewrite.
 - **Lesson:** Every external system is behind one interface at the application boundary. Field mappings and quirks live inside the adapter. The rest of the code stays clean.
 - **Apply going forward:** For Phalanx's freight-carrier integrations, this is the seam that matters most. Each carrier is one adapter; adding a new carrier is not a refactor.
+
+
 
 ### `output.data` shape may not match DB columns exactly
 
@@ -259,7 +341,11 @@ The single largest source of production incidents in this project. Every one of 
 
 ---
 
+
+
 ## Process discipline
+
+
 
 ### Verify before trusting a summary
 
@@ -267,11 +353,15 @@ The single largest source of production incidents in this project. Every one of 
 - **Lesson:** Written summaries decay. What was true when written may not be true now.
 - **Apply going forward:** Before acting on any handoff claim about system state, verify against the actual system. Especially for infrastructure claims that could differ silently.
 
+
+
 ### Scope discipline — feature vs infra
 
 - **What happened:** Infrastructure work (CI, ruleset, rebase, cleanup) can easily crowd out feature work. Each session needs a stated focus and a deliberate close-out.
 - **Lesson:** Infrastructure and features are both real work, but they compete for the same attention. Without discipline, infra always wins because it feels urgent.
 - **Apply going forward:** Every session has a primary goal. Infrastructure work is scheduled explicitly, not accreted opportunistically. Close threads cleanly.
+
+
 
 ### AI-assisted work needs a deliberate "human as gate" moment
 
@@ -281,13 +371,19 @@ The single largest source of production incidents in this project. Every one of 
 
 ---
 
+
+
 ## Vendor / third-party quirks
+
+
 
 ### GitHub Actions can go down; subscribe to the status page
 
 - **What happened:** During this session, GitHub Actions was in a "Major Outage" affecting webhook triggers and runner acquisition. Symptoms exactly mimicked a workflow-file bug.
-- **Lesson:** When CI is behaving oddly, check https://www.githubstatus.com/ before assuming your workflow is broken.
+- **Lesson:** When CI is behaving oddly, check [https://www.githubstatus.com/](https://www.githubstatus.com/) before assuming your workflow is broken.
 - **Apply going forward:** Subscribe to GitHub, Vercel, Supabase, and any other critical vendor status pages. Bookmarks aren't enough — subscriptions notify.
+
+
 
 ### Hevy weight precision
 
@@ -295,11 +391,15 @@ The single largest source of production incidents in this project. Every one of 
 - **Lesson:** External API precision is not always sensible; round on display.
 - **Apply going forward:** For any external numeric field, decide display precision explicitly. Never trust the source's precision to be right.
 
+
+
 ### LoseIt CSV quirks
 
 - **What happened:** Real LoseIt CSVs contain: `"n/a"` in place of missing macro values (must parse as null), MM/DD/YYYY dates (must convert), CRLF line endings, quoted values with internal commas (`"Bread, 21 Whole Grains And Seeds"`), and mixed row shapes (16-field food rows vs 8-field exercise rows).
 - **Lesson:** Every real data source has more quirks than the docs describe. Discover them via real bytes, not synthetic test data.
 - **Apply going forward:** For every external data source in Phalanx, maintain a fixture of real (redacted) bytes as the canonical test input.
+
+
 
 ### Azure AI Services resources expose two endpoint families on the same resource
 
@@ -309,29 +409,32 @@ The single largest source of production incidents in this project. Every one of 
 
 ---
 
+
+
 ## What we would build differently at Phalanx from day one
 
 Reading back over this document, a few themes emerge that are worth building into Phalanx from the beginning, not bolted on later:
 
 1. **Migrations are part of the CI/CD pipeline, not a manual step.** CI applies pending migrations to prod on merge to `main`, and refuses to deploy if migrations fail. No `db push` from a developer machine to prod, ever.
-
 2. **Env var and secrets management is centralized and diffable.** A manifest in the repo describes what secrets each environment needs; CI diffs the manifest against Vercel/Supabase and fails on drift.
-
 3. **Post-deploy smoke tests are mandatory.** Every deploy exercises critical paths before being considered "successful."
-
 4. **RLS is verified with two-tenant tests on every table.** Not just enabled — actively proven to isolate.
-
 5. **The evaluator-optimizer review loop is formalized.** Architect and security-reviewer are separate personas with separate models; findings are grounded in cited sources; the human sits on the final gate.
-
 6. **Real-data fixtures are the default, not the exception.** Every external integration has a redacted sample of real production bytes as its canonical test fixture.
-
-7. **Every session with an AI agent begins with `git checkout -b`.** No exceptions.
-
+7. **Every session with an AI agent begins with** `git checkout -b`**.** No exceptions.
 8. **The status page for every critical vendor is subscribed to.** GitHub, Vercel, Supabase, and every carrier or partner API on Phalanx.
-
 9. **Rollback is muscle memory.** Practice it regularly, not just when the alarm sounds.
-
 10. **The reviewer pool is resilient — 2–3 reviewers plus an audited break-glass path.** Not admin bypass.
+
+## Security review must question the stack, not just the code
+
+### The reviewer accepted the architect's stack as a fixed constraint
+
+- **What happened:** The architect-reviewer subagent loop ran two full iterations reviewing the fatloss-app architecture. Both passes approved the stack — Vercel, [trigger.dev](http://trigger.dev), Supabase — without questioning whether secrets should reside on those platforms at all. The `service_role` key (which bypasses all RLS) was pasted into three independent dashboards (Vercel, [trigger.dev](http://trigger.dev), `.env.local`) with no centralized rotation and no audit trail. Neither subagent flagged this. Crown jewel #5 (credential/secret security) received a `no_reachable_path` verdict both times.
+
+- **Lesson:** The reviewer attacked the code deployed *to* Vercel without attacking Vercel as a dependency. Both subagents shared the assumption that the stack was given and reviewed within it — "are secrets out of the client bundle?" rather than "should these secrets exist on this platform?" This is the convergence failure the handoff document warns about: the reviewer drifted toward the architect's framing instead of maintaining independence. No best-in-class SaaS company (Stripe, Atlassian, HubSpot, Shopify) distributes secrets across third-party convenience platforms — they own their cloud accounts and use managed identity. The subagents had no reference frame for that because they were reasoning from OWASP/STRIDE frameworks alone, not from how commercial SaaS companies actually build.
+
+- **Apply going forward:** Three structural changes were made: (1) a new `SAAS_REFERENCE_CATALOG.md` grounds both subagents in real commercial SaaS practice with citable sources, (2) the security reviewer's workflow now starts with a "Stack / Platform Review" step that questions every tool choice before running STRIDE, and (3) the handoff document's anti-convergence guardrails were expanded from five to six, adding "every proposed platform is an attack surface, not a fixed constraint." Azure was established as the default platform for Phalanx based on the existing relationship via Azure OpenAI.
 
 ---
 
