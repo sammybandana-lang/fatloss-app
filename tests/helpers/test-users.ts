@@ -49,7 +49,46 @@ export async function newTestUser(): Promise<TestUser> {
   if (!data.user) throw new Error("signUp returned no user");
 
   created.push(data.user.id);
+  await waitForUsableSession(client, data.user.id);
   return { client, id: data.user.id };
+}
+
+/**
+ * Waits until the brand-new session's token is actually accepted.
+ *
+ * Supabase's auth service issues the token and its API service validates
+ * it — two different servers. If their clocks differ by a fraction of a
+ * second, a token used milliseconds after being minted can be rejected
+ * with "JWT issued at future", which then surfaces as an unrelated test
+ * failing somewhere downstream. It happened three times during the Azure
+ * migration work, and once it masked six genuine failures in the same
+ * run.
+ *
+ * So the session is proven usable here, where the cause is obvious,
+ * rather than in whichever test happens to query first. Cheap in the
+ * normal case: one round trip, no waiting.
+ *
+ * Only retries the clock-skew case. Any other error is left alone for
+ * the test to surface — a retry loop that swallows real failures would
+ * be worse than the flake it replaced.
+ */
+async function waitForUsableSession(
+  client: SupabaseClient,
+  userId: string,
+): Promise<void> {
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const { error } = await client
+      .from("app_users")
+      .select("id")
+      .eq("id", userId)
+      .maybeSingle();
+
+    if (!error || !/jwt/i.test(error.message)) {
+      return;
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  }
 }
 
 /**
