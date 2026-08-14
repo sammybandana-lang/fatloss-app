@@ -1,82 +1,14 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import type { SupabaseClient } from "@supabase/supabase-js";
 import { createClient } from "@/lib/supabase/server";
-import { fetchRecentHevyWorkouts } from "@/lib/hevy/client";
-import {
-  mapHevyWorkout,
-  type MappedWorkout,
-  type WorkoutExerciseRow,
-  type WorkoutSetRow,
-} from "@/lib/hevy/mapper";
+import { syncHevyWorkoutsFor } from "@/lib/hevy/sync";
 
 /**
- * Upserts one exercise (linked to its workout) and its sets (linked to the
- * exercise). Idempotent on (workout_id, order_index) and (exercise_id,
- * set_index), so re-syncing the same workout updates rather than duplicates.
- */
-async function upsertExercise(
-  supabase: SupabaseClient,
-  workoutId: string,
-  exercise: WorkoutExerciseRow,
-  sets: WorkoutSetRow[],
-) {
-  const { data: exerciseRow, error: exerciseError } = await supabase
-    .from("workout_exercises")
-    .upsert(
-      { ...exercise, workout_id: workoutId },
-      { onConflict: "workout_id,order_index" },
-    )
-    .select("id")
-    .single();
-
-  if (exerciseError) {
-    throw new Error(exerciseError.message);
-  }
-  if (sets.length === 0) {
-    return;
-  }
-
-  const { error: setsError } = await supabase.from("workout_sets").upsert(
-    sets.map((set) => ({ ...set, exercise_id: exerciseRow.id })),
-    { onConflict: "exercise_id,set_index" },
-  );
-
-  if (setsError) {
-    throw new Error(setsError.message);
-  }
-}
-
-/**
- * Upserts one workout (idempotent on the (user_id, hevy_id) unique
- * constraint), then its exercises and sets underneath it.
- */
-async function upsertWorkout(supabase: SupabaseClient, mapped: MappedWorkout) {
-  const { data: workoutRow, error: workoutError } = await supabase
-    .from("workouts")
-    .upsert(mapped.workout, { onConflict: "user_id,hevy_id" })
-    .select("id")
-    .single();
-
-  if (workoutError) {
-    throw new Error(workoutError.message);
-  }
-
-  for (const { exercise, sets } of mapped.exercises) {
-    await upsertExercise(supabase, workoutRow.id, exercise, sets);
-  }
-}
-
-/**
- * Pulls the most recent page of workouts from Hevy for the signed-in user
- * and upserts them into Supabase. `user_id` is never sent — the database
- * fills it in (default `auth.uid()`) and Row-Level Security ensures a
- * user can only ever write their own rows. Safe to run repeatedly:
- * re-syncing updates existing rows instead of duplicating them. Only the
- * most recent page is fetched (not a full resync) since this runs on
- * every routine sync and older workouts are already in the database.
- * Returns the count synced so callers can show a status message.
+ * Pulls the most recent page of workouts from Hevy for the signed-in user.
+ * Resolves who is asking from the verified session — never from anything
+ * the screen sends — and hands that user id to the shared sync function in
+ * `lib/hevy/sync.ts`, which the daily background job also uses.
  */
 export async function syncHevyWorkouts(): Promise<{ workoutCount: number }> {
   const supabase = await createClient();
@@ -89,13 +21,9 @@ export async function syncHevyWorkouts(): Promise<{ workoutCount: number }> {
     throw new Error("You must be signed in to sync workouts.");
   }
 
-  const rawWorkouts = await fetchRecentHevyWorkouts();
-
-  for (const raw of rawWorkouts) {
-    await upsertWorkout(supabase, mapHevyWorkout(raw));
-  }
+  const result = await syncHevyWorkoutsFor(supabase, user.id);
 
   revalidatePath("/");
 
-  return { workoutCount: rawWorkouts.length };
+  return result;
 }

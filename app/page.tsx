@@ -3,7 +3,7 @@ import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { getWorkoutsForDate, type LatestWorkoutExercise } from "@/lib/hevy/queries";
 import { getDietTotalsForDate } from "@/lib/loseit/queries";
-import { yesterdayInEasternTime } from "@/lib/dates";
+import { yesterdayInEasternTime, formatDateShort } from "@/lib/dates";
 import { kgToLbs } from "@/lib/units";
 import { getGoals } from "@/app/goals/actions";
 import { logout } from "./login/actions";
@@ -12,15 +12,6 @@ import { PageShell } from "@/app/_components/design/PageShell";
 import { Card } from "@/app/_components/design/Card";
 import { Eyebrow } from "@/app/_components/design/Eyebrow";
 import { StatBlock } from "@/app/_components/design/StatBlock";
-
-/** e.g. "2026-08-07" -> "Aug 7". Parsed/formatted in UTC so the date-only string can't shift a day. */
-function formatDateShort(isoDate: string): string {
-  return new Intl.DateTimeFormat("en-US", {
-    month: "short",
-    day: "numeric",
-    timeZone: "UTC",
-  }).format(new Date(`${isoDate}T00:00:00Z`));
-}
 
 /** Renders a nullable goal field as its bare value, or a dash when unset. */
 function formatGoalValue(value: number | null, unit = ""): string {

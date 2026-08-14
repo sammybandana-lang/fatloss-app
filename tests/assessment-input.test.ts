@@ -1,14 +1,23 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 import { config } from "dotenv";
 import { assembleAssessmentInput } from "@/lib/ai/assessment-input";
 import { kgToLbs } from "@/lib/units";
+import { newTestUser, deleteTestUsers } from "./helpers/test-users";
 
 // Load Supabase credentials from .env.local (no secrets hardcoded)
 config({ path: ".env.local" });
 
 const URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!;
+const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+
+if (!SERVICE_KEY) {
+  console.warn(
+    "\n*** SUPABASE_SERVICE_ROLE_KEY is not set — the service-role isolation " +
+      "test will NOT run. That test is the one proving the daily job cannot " +
+      "read another user's data. Set it in .env.local (and as a CI secret).\n",
+  );
+}
 
 // Fixed "now" so "yesterday" is deterministically 2026-08-07, regardless of
 // when the test actually runs. Only `Date` is faked (not setTimeout/etc.)
@@ -26,16 +35,11 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-// Make a brand-new signed-in user, return their own client
-async function newUser(): Promise<SupabaseClient> {
-  const client = createClient(URL, KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-  const email = `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.com`;
-  const { error } = await client.auth.signUp({ email, password: "test-password-123456" });
-  if (error) throw new Error(`signUp failed: ${error.message}`);
-  return client;
-}
+// Every user signed up here is deleted again afterwards, so repeated runs
+// don't accumulate accounts and exhaust Supabase's hourly signup limit.
+afterAll(deleteTestUsers);
+
+const newUser = newTestUser;
 
 async function insertDietEntry(user: SupabaseClient, entryDate: string, calories: number, proteinG: number) {
   const { error } = await user.from("diet_entries").insert({
@@ -102,9 +106,9 @@ async function seedTwoDaysOfData(user: SupabaseClient) {
 
 describe("assembleAssessmentInput", () => {
   it("returns nulls for diet/workout and the correct yesterday_date when nothing was logged", async () => {
-    const user = await newUser();
+    const { client, id } = await newUser();
 
-    const input = await assembleAssessmentInput(user);
+    const input = await assembleAssessmentInput(client, id);
 
     expect(input).toEqual({
       weight_lbs_start: null,
@@ -120,10 +124,10 @@ describe("assembleAssessmentInput", () => {
   }, 30000);
 
   it("reads yesterday's diet and workout only, not two days ago's", async () => {
-    const user = await newUser();
-    await seedTwoDaysOfData(user);
+    const { client, id } = await newUser();
+    await seedTwoDaysOfData(client);
 
-    const input = await assembleAssessmentInput(user);
+    const input = await assembleAssessmentInput(client, id);
 
     expect(input).toEqual({
       weight_lbs_start: 210,
@@ -139,26 +143,26 @@ describe("assembleAssessmentInput", () => {
   }, 30000);
 
   it("returns all of yesterday's workout names, not two-days-ago's", async () => {
-    const user = await newUser();
+    const { client, id } = await newUser();
 
-    await insertWorkout(user, `${YESTERDAY}T12:00:00Z`, 50, 10, "Morning Run");
-    await insertWorkout(user, `${YESTERDAY}T20:00:00Z`, 80, 8, "Evening Lift");
-    await insertWorkout(user, `${TWO_DAYS_AGO}T18:00:00Z`, 9999, 99, "Two Days Ago Workout");
+    await insertWorkout(client, `${YESTERDAY}T12:00:00Z`, 50, 10, "Morning Run");
+    await insertWorkout(client, `${YESTERDAY}T20:00:00Z`, 80, 8, "Evening Lift");
+    await insertWorkout(client, `${TWO_DAYS_AGO}T18:00:00Z`, 9999, 99, "Two Days Ago Workout");
 
-    const input = await assembleAssessmentInput(user);
+    const input = await assembleAssessmentInput(client, id);
 
     expect(input.yesterday_workout_names).toEqual(["Morning Run", "Evening Lift"]);
   }, 30000);
 
   it("classifies an 8pm ET workout that crosses midnight UTC as yesterday's, not today's", async () => {
-    const user = await newUser();
+    const { client, id } = await newUser();
 
     // 2026-08-08T00:26:57Z is 8:26pm ET on Aug 7 (EDT, UTC-4 in August). A
     // naive UTC "yesterday" range would exclude this, since in UTC it's
     // already Aug 8 — the exact prod bug this slice fixes.
-    await insertWorkout(user, "2026-08-08T00:26:57Z", 80, 10);
+    await insertWorkout(client, "2026-08-08T00:26:57Z", 80, 10);
 
-    const input = await assembleAssessmentInput(user);
+    const input = await assembleAssessmentInput(client, id);
 
     expect(input.yesterday_date).toBe(YESTERDAY);
     expect(input.yesterday_workout_present).toBe(1);
@@ -169,12 +173,12 @@ describe("assembleAssessmentInput", () => {
     const userA = await newUser();
     const userB = await newUser();
 
-    await seedTwoDaysOfData(userA);
+    await seedTwoDaysOfData(userA.client);
 
     // THE WALL: User B's assembled input must reflect User B's (empty)
     // data, not User A's, even though both queries ran within the same
     // test run around the same time.
-    const inputB = await assembleAssessmentInput(userB);
+    const inputB = await assembleAssessmentInput(userB.client, userB.id);
 
     expect(inputB).toEqual({
       weight_lbs_start: null,
@@ -188,4 +192,55 @@ describe("assembleAssessmentInput", () => {
       yesterday_workout_names: [],
     });
   }, 30000);
+});
+
+/**
+ * The tests above run under a per-user session client, where Row-Level
+ * Security scopes results even if the code forgot to. The daily job does
+ * not have that safety net: it uses the service-role key, which bypasses
+ * RLS entirely, so the explicit `.eq("user_id", ...)` filters in
+ * assembleAssessmentInput are the ONLY thing separating users.
+ *
+ * This is the test for that. If any of those filters were dropped, the
+ * service-role client would see every user's rows: the diet totals would
+ * include other people's calories, and `getGoalWeights`'s `.maybeSingle()`
+ * would throw outright once a second user had a goal row.
+ */
+describe.skipIf(!SERVICE_KEY)("assembleAssessmentInput under a service-role client", () => {
+  it("returns only the requested user's data even though RLS is bypassed", async () => {
+    const userA = await newUser();
+    const userB = await newUser();
+
+    await seedTwoDaysOfData(userA.client);
+
+    // The master key: no session, no RLS, sees the whole table.
+    const service = createClient(URL, SERVICE_KEY!, {
+      auth: { persistSession: false, autoRefreshToken: false },
+    });
+
+    // Asking for A gets A's real numbers...
+    const inputA = await assembleAssessmentInput(service, userA.id);
+    expect(inputA.weight_lbs_start).toBe(210);
+    expect(inputA.weight_lbs_goal).toBe(195);
+    expect(inputA.weight_lbs_current).toBe(205);
+    expect(inputA.yesterday_calories).toBe(500);
+    expect(inputA.yesterday_protein_g).toBe(40);
+    expect(inputA.yesterday_workout_present).toBe(1);
+    expect(inputA.yesterday_workout_names).toEqual(["Yesterday Workout"]);
+
+    // ...and asking for B, who logged nothing, must come back empty —
+    // not A's data, and not a blend of every user in the database.
+    const inputB = await assembleAssessmentInput(service, userB.id);
+    expect(inputB).toEqual({
+      weight_lbs_start: null,
+      weight_lbs_goal: null,
+      weight_lbs_current: null,
+      yesterday_calories: null,
+      yesterday_protein_g: null,
+      yesterday_workout_present: 0,
+      yesterday_workout_volume_lbs: null,
+      yesterday_date: YESTERDAY,
+      yesterday_workout_names: [],
+    });
+  }, 60000);
 });

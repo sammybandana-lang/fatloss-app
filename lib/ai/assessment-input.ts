@@ -9,10 +9,12 @@ import {
 
 async function getGoalWeights(
   supabase: SupabaseClient,
+  userId: string,
 ): Promise<{ start: number | null; goal: number | null }> {
   const { data, error } = await supabase
     .from("goals")
     .select("weight_lbs_start, weight_lbs_goal")
+    .eq("user_id", userId)
     .maybeSingle();
 
   if (error) {
@@ -26,10 +28,14 @@ async function getGoalWeights(
 }
 
 /** Most recent measurement by observed date (not upload date), tie-broken by insert order. */
-async function getCurrentWeight(supabase: SupabaseClient): Promise<number | null> {
+async function getCurrentWeight(
+  supabase: SupabaseClient,
+  userId: string,
+): Promise<number | null> {
   const { data, error } = await supabase
     .from("measurements")
     .select("weight_lbs")
+    .eq("user_id", userId)
     .order("measured_at", { ascending: false })
     .order("created_at", { ascending: false })
     .limit(1)
@@ -53,11 +59,13 @@ async function getCurrentWeight(supabase: SupabaseClient): Promise<number | null
  */
 async function getYesterdaysDiet(
   supabase: SupabaseClient,
+  userId: string,
   easternDateStr: string,
 ): Promise<{ calories: number | null; protein_g: number | null }> {
   const { data, error } = await supabase
     .from("diet_entries")
     .select("calories, protein_g")
+    .eq("user_id", userId)
     .eq("entry_date", easternDateStr);
 
   if (error) {
@@ -92,6 +100,7 @@ async function getYesterdaysDiet(
  */
 async function getYesterdaysWorkoutStats(
   supabase: SupabaseClient,
+  userId: string,
   easternDateStr: string,
 ): Promise<{ present: 0 | 1; volume_lbs: number | null; names: string[] }> {
   const { start, end } = wideUtcWindowAroundEasternDate(easternDateStr);
@@ -99,6 +108,7 @@ async function getYesterdaysWorkoutStats(
   const { data: workouts, error: workoutsError } = await supabase
     .from("workouts")
     .select("id, title, start_time")
+    .eq("user_id", userId)
     .gte("start_time", start)
     .lt("start_time", end)
     .order("start_time", { ascending: true });
@@ -125,6 +135,7 @@ async function getYesterdaysWorkoutStats(
   const { data: exercises, error: exercisesError } = await supabase
     .from("workout_exercises")
     .select("id")
+    .eq("user_id", userId)
     .in("workout_id", workoutIds);
 
   if (exercisesError) {
@@ -139,6 +150,7 @@ async function getYesterdaysWorkoutStats(
   const { data: sets, error: setsError } = await supabase
     .from("workout_sets")
     .select("weight_kg, reps")
+    .eq("user_id", userId)
     .in("exercise_id", exerciseIds);
 
   if (setsError) {
@@ -164,28 +176,36 @@ export type AssembledAssessmentInput = AssessmentInput & {
 };
 
 /**
- * Assembles yesterday's (Eastern time) `AssessmentInput` for the caller's
- * session: goals, most recent measurement, yesterday's diet totals, and
- * yesterday's workout stats. Every query relies entirely on Row-Level
- * Security to scope to the caller — no manual user_id filter anywhere.
+ * Assembles yesterday's (Eastern time) `AssessmentInput` for `userId`:
+ * goals, most recent measurement, yesterday's diet totals, and yesterday's
+ * workout stats.
+ *
+ * Every query filters on `user_id` explicitly. That is deliberately
+ * belt-and-suspenders under a session client, where Row-Level Security
+ * already scopes the results — but it is the *only* thing keeping users
+ * apart when the caller passes a service-role client, because service role
+ * bypasses RLS entirely. The daily job (`lib/jobs/daily-assessment.ts`)
+ * has no session to scope by, so it does exactly that. Removing any of
+ * these filters would silently mix users' data together in the job path.
  *
  * Takes an explicit `SupabaseClient` rather than creating one internally
  * from `@/lib/supabase/server`, so it can be exercised directly against a
- * real per-user client in tests. `createClient()` there calls
- * `cookies()`, which throws outside a real Next.js request scope — the
- * same issue hit (and fixed the same way) for `getLatestWorkout` and the
- * LoseIt diet queries.
+ * real per-user client in tests, and so the job can hand it a service-role
+ * client. `createClient()` there calls `cookies()`, which throws outside a
+ * real Next.js request scope — the same issue hit (and fixed the same way)
+ * for `getLatestWorkout` and the LoseIt diet queries.
  */
 export async function assembleAssessmentInput(
   supabase: SupabaseClient,
+  userId: string,
 ): Promise<AssembledAssessmentInput> {
   const easternDateStr = yesterdayInEasternTime();
 
   const [{ start, goal }, currentWeight, diet, workoutStats] = await Promise.all([
-    getGoalWeights(supabase),
-    getCurrentWeight(supabase),
-    getYesterdaysDiet(supabase, easternDateStr),
-    getYesterdaysWorkoutStats(supabase, easternDateStr),
+    getGoalWeights(supabase, userId),
+    getCurrentWeight(supabase, userId),
+    getYesterdaysDiet(supabase, userId, easternDateStr),
+    getYesterdaysWorkoutStats(supabase, userId, easternDateStr),
   ]);
 
   return {

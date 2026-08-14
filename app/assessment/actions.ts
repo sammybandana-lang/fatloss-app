@@ -44,7 +44,7 @@ export async function generateTodaysAssessment(): Promise<AssessmentResult> {
     // data — they must never reach the LLM, so both are stripped out of
     // `input` before calling generateAssessment.
     const { yesterday_date, yesterday_workout_names, ...input } =
-      await assembleAssessmentInput(supabase);
+      await assembleAssessmentInput(supabase, user.id);
     const { short_assessment, grade, model, usage } = await generateAssessment(input);
 
     return {

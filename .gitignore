@@ -32,6 +32,10 @@ yarn-error.log*
 
 # env files (can opt-in for committing if needed)
 .env*
+# ...except the manifest, which holds names and comments only, never values.
+# LESSONS_LEARNED.md calls env drift the biggest source of prod incidents
+# here, and a manifest that can't be committed can't help with that.
+!.env.example
 
 # vercel
 .vercel

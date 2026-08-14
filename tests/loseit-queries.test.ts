@@ -1,13 +1,7 @@
-import { describe, it, expect } from "vitest";
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
-import { config } from "dotenv";
+import { describe, it, expect, afterAll } from "vitest";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { getLatestDayDietTotals } from "../lib/loseit/queries";
-
-// Load Supabase credentials from .env.local (no secrets hardcoded).
-config({ path: ".env.local" });
-
-const URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
-const KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!;
+import { newTestUser, deleteTestUsers } from "./helpers/test-users";
 
 // These tests hit the real (dev) Supabase project directly, the same way
 // tests/isolation.test.ts does. A fully-mocked Supabase client would just
@@ -15,15 +9,13 @@ const KEY = process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY!;
 // like ordering/filtering on the wrong column. Exercising the query against
 // a real DB is the point.
 
+// Every user signed up here is deleted again afterwards, so repeated runs
+// don't accumulate accounts and exhaust Supabase's hourly signup limit.
+afterAll(deleteTestUsers);
+
 // Make a brand-new signed-in user, return their own client.
 async function newUser(): Promise<SupabaseClient> {
-  const client = createClient(URL, KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
-  const email = `test-${Date.now()}-${Math.random().toString(36).slice(2, 8)}@example.com`;
-  const { error } = await client.auth.signUp({ email, password: "test-password-123456" });
-  if (error) throw new Error(`signUp failed: ${error.message}`);
-  return client;
+  return (await newTestUser()).client;
 }
 
 function dietEntry(overrides: {

@@ -34,6 +34,29 @@ export function yesterdayInEasternTime(): string {
 }
 
 /**
+ * e.g. "2026-08-07" -> "Aug 7". Parsed/formatted in UTC so the date-only
+ * string can't shift a day: `new Date("2026-08-07")` is midnight UTC, and
+ * formatting that in a negative-offset zone would render "Aug 6".
+ */
+export function formatDateShort(isoDate: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(`${isoDate}T00:00:00Z`));
+}
+
+/** e.g. "2026-08-07" -> "Aug 7, 2026". UTC for the same reason as above. */
+export function formatDateLong(isoDate: string): string {
+  return new Intl.DateTimeFormat("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    timeZone: "UTC",
+  }).format(new Date(`${isoDate}T00:00:00Z`));
+}
+
+/**
  * A UTC fetch window guaranteed to be a superset of the given Eastern
  * calendar date — a full day of margin on each side, comfortably covering
  * the ET/UTC offset (4-5 hours depending on DST). Rows are filtered down
