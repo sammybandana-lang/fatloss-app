@@ -131,3 +131,47 @@ describe("app_current_user_id() — the replacement for auth.uid()", () => {
     expect(data ?? []).toHaveLength(0);
   }, 30000);
 });
+
+/**
+ * Phase 2 step 2 — see
+ * supabase/migrations/20260814150000_phase2_policies_onto_shim.sql.
+ *
+ * Six tables stamp new rows with their owner using a column DEFAULT, which
+ * that migration switches from auth.uid() to app_current_user_id(). The
+ * app relies on this: nothing in app/ passes user_id explicitly on insert.
+ *
+ * A broken default is the quietest possible failure here. It would not
+ * throw — the insert policy would simply reject the row, or worse, stamp
+ * it with the wrong id. These assert the value that actually landed,
+ * rather than just that the insert returned no error.
+ */
+describe("owner stamping — the column defaults on the shim", () => {
+  it("stamps a new measurement with the caller's own id", async () => {
+    const user = await newTestUser();
+
+    // No user_id supplied — exactly how app/ inserts.
+    const { data, error } = await user.client
+      .from("measurements")
+      .insert({ weight_lbs: 171.2 })
+      .select("user_id")
+      .single();
+
+    expect(error).toBeNull();
+    expect(data?.user_id).toBe(user.id);
+  }, 30000);
+
+  it("stamps a new goals row, where user_id is also the primary key", async () => {
+    const user = await newTestUser();
+
+    // goals is the one table where a wrong default breaks the primary key
+    // rather than just the ownership stamp.
+    const { data, error } = await user.client
+      .from("goals")
+      .insert({ weight_lbs_goal: 180 })
+      .select("user_id")
+      .single();
+
+    expect(error).toBeNull();
+    expect(data?.user_id).toBe(user.id);
+  }, 30000);
+});
