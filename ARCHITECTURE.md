@@ -21,6 +21,10 @@ BLOCKERs)**. Sam has ruled on the four items the reviewer escalated
 pass addresses all 13 findings from `review-1.json`. Nothing here is built
 yet; this remains the plan reviewed before any code or migration is written.
 
+**§10 (Azure migration plan) is outside that review.** It was added later,
+at Sam's request, and has had **no security-reviewer pass**. It applies to
+§§0–9 as a whole rather than to the assessment feature specifically.
+
 Conventions used throughout:
 
 - **FACT** = verified against this repo's code, or a stable, well-known
@@ -1482,6 +1486,340 @@ New env vars needed (server-only, never `NEXT_PUBLIC_*`):
 
 
 
+
+---
+
+
+
+## 10. Azure migration plan (Vercel / Supabase / trigger.dev → Azure)
+
+**Provenance note — read this first.** §§0–9 above are the output of the
+architect ⇄ security-reviewer loop. **This section is not.** It was written
+directly at Sam's request and has had **no security review pass**. Do not
+treat any statement here as reviewer-approved. When this migration is
+actually scheduled, §10 is the natural input to a fresh review loop — it
+crosses new risk boundaries (new identity provider, new network perimeter,
+new privilege model), which is exactly the trigger condition Build
+Guidance rule 4 sets for re-running the loop.
+
+Conventions continue: **FACT** = verified against this repo this session.
+**ASSUMPTION** = external platform behavior not verified (Azure service
+names, tiers, and limits move fast; knowledge cutoff May 2026). Every
+Azure specific below is an ASSUMPTION unless marked otherwise and must be
+confirmed against Microsoft Learn before anything is provisioned.
+
+### 10.0 The one thing that actually makes this hard
+
+Supabase is not a Postgres host. It is Postgres **plus** PostgREST plus
+GoTrue plus a specific role setup, and this project's isolation guarantee
+is wired into all three. Verified this session by reading the migrations
+and `lib/supabase/*`:
+
+| Supabase-specific dependency | Where it appears | FACT |
+| --- | --- | --- |
+| `auth.uid()` | The `using`/`with check` clause of **every** RLS policy on every table, **and** as the `default` on every `user_id` column | FACT — `20260801171634_create_measurements.sql` and all 7 sibling migrations |
+| `auth.users` | The FK target of every `user_id` column, including the `on delete cascade` chains | FACT — same migrations, plus `20260810160000_measurements_cascade_on_user_delete.sql` |
+| `authenticated` / `anon` / `service_role` | Real Postgres roles that PostgREST assumes per-request; every `grant` in every migration names them; §2.2's guard trigger branches on `current_user = 'service_role'` | FACT — `20260810153000_grant_service_role_for_daily_job.sql` |
+
+**Nothing else in the schema is Supabase-specific.** RLS itself, the
+four-policy owner pattern, `SECURITY DEFINER` functions, the append-only
+triggers, `CHECK` constraints, and the partial unique indexes
+(`send_log_one_sent_per_draft_idx`,
+`trainer_recipients_one_active_per_user_idx`) are all stock PostgreSQL and
+move to Azure Database for PostgreSQL **verbatim**.
+
+So the migration reduces to one central task: **replace those three seams
+with portable equivalents — and do it while still running on Supabase, so
+the isolation tests prove the replacement before the host ever changes.**
+That single decision is what makes the rest of this plan low-risk, and it
+is the reason §10.5 orders the phases the way it does.
+
+**The trap this creates (call it out loudly, per CLAUDE.md's "the database
+is the safety net"):** in stock PostgreSQL, **the table owner bypasses RLS
+by default.** Supabase's setup hides this because the app never connects as
+the owner. On Azure, if the application role is also the role that created
+the tables, *every RLS policy in this document silently stops applying* and
+nothing visibly fails. Mitigation is mandatory and non-negotiable:
+`alter table <t> force row level security;` on every table, plus an
+application role that is **not** the owner. §10.8 makes this a test, not a
+note.
+
+### 10.1 Component mapping
+
+ASSUMPTION on every Azure product name, tier, and limit below.
+
+| # | Today | Azure equivalent | What actually changes | Notes / risk |
+| --- | --- | --- | --- | --- |
+| 1 | **Vercel** (Next.js hosting) | **Azure App Service**, Linux, Node LTS | `next build` with `output: "standalone"`; a startup command instead of zero-config deploy | Lose: global edge CDN, automatic image optimization, preview deployments. Regain via **Azure Front Door** (CDN/WAF/TLS) and **deployment slots** (preview + blue-green). Gains a **system-assigned managed identity**, which is the whole point |
+| 2 | **Supabase PostgreSQL** | **Azure Database for PostgreSQL Flexible Server** | Host, connection string, auth method. Schema moves as-is except the three seams in §10.0 | Match the current major version on the first hop — do not combine a version upgrade with a platform move. Enable the **built-in PgBouncer**; see §10.7 for why this is not optional with Functions |
+| 3 | **Supabase Auth** (GoTrue) | See §10.2 — recommended: **Entra External ID** as IdP + **Auth.js** as the Next.js OIDC client | `signInWithPassword`/`signUp`/`signOut` replaced; all 12 `auth.getUser()` call sites become one session helper | Smaller than it looks: FACT — only those three auth operations exist in the codebase; no social login, no magic links, no MFA in use today |
+| 4 | **trigger.dev** (daily job) | **Azure Functions**, Timer trigger (NCRONTAB) | `trigger/*.ts` task definition → a Function with a timer binding; job body largely unchanged | Consumption plan has a hard execution timeout and **no VNet integration** (ASSUMPTION) — with a private-endpoint Postgres you need **Flex Consumption or Premium**. trigger.dev's built-in retry/replay/observability has no free equivalent: use **Durable Functions** if you want orchestration, or accept "the timer fires again tomorrow" |
+| 5 | **Env vars in Vercel + trigger.dev dashboards** | **Azure Key Vault** + **Managed Identity** | `process.env.X` → Key Vault reference (App Service/Functions app setting) or SDK fetch at startup | This is the catalog's Level 2 → Level 3/4 jump (SAAS_REFERENCE_CATALOG §2). See §10.6 #3 — one of these secrets **ceases to exist entirely**, which is a real security win, not a lateral move |
+| 6 | **supabase-js** (`@supabase/supabase-js`, `@supabase/ssr`) | **`pg`** (node-postgres) behind a small `lib/db/` wrapper | `.from().select()` / `.rpc()` → parameterized SQL | The largest volume of code change in the whole migration, and the least conceptually interesting. Mechanical, well-covered by existing tests |
+| 7 | **Supabase Studio** (operator writes) | **No equivalent** | `psql` / pgAdmin over the private endpoint, or a small admin CLI | **This breaks documentation, not just tooling** — §2.4, §2.5, and §8 all name Studio as the operator write path for `trainer_recipients` and `app_settings`. See §10.6 #5 |
+| 8 | **Supabase CLI migrations** | Raw SQL + a runner (node-pg-migrate, Flyway, or sqitch) in **GitHub Actions** | `supabase db push` → a migration step in CI | Keep the existing `supabase/migrations/*.sql` files and their timestamps; only the applier changes. Preserves CLAUDE.md's "edit a tracked file, test on practice first" rule |
+| 9 | **`supabase start`** (local dev) | Docker Postgres + the same migration runner | A `docker-compose.yml` and a seed script | Also needs a local auth story — see §10.2 |
+| 10 | **Vercel / trigger.dev logs** | **Application Insights** | `lib/log.ts` unchanged; the sink changes | §3's F-009 redaction discipline matters **more** here: App Insights is queryable and retained by policy, so a leaked prompt body is more durable than it was in a rolling platform log |
+| 11 | **GitHub → Vercel deploy** | **GitHub Actions + Azure OIDC federation** | New workflow | Catalog §5: no static CI credentials. Do this from day one, not later |
+| 12 | Supabase Realtime / Storage / Edge Functions | — | — | **Not used** (FACT — no references in the repo). No loss, no work |
+
+### 10.2 Supabase Auth replacement — evaluation
+
+**What we are actually replacing (FACT, verified this session):** three
+operations in `app/login/actions.ts` (`signInWithPassword`, `signUp`,
+`signOut`), one session read repeated at 12 call sites
+(`supabase.auth.getUser()`), and the cookie refresh in
+`lib/supabase/proxy.ts`. No OAuth providers, no magic links, no MFA, no
+password-reset flow currently wired. This is a small surface — the cost is
+in the *identity model*, not the *feature list*.
+
+| Option | Where credentials live | Cost to integrate | Catalog fit | Verdict |
+| --- | --- | --- | --- | --- |
+| **Microsoft Entra External ID** (CIAM; ASSUMPTION on current product naming — the Azure AD B2C successor) | Microsoft, in our own tenant | OIDC wiring + a CIAM tenant + user flows. Heaviest setup of the three | Strongest — catalog §5 and §7 item 8 name it as the Azure default | **Recommended as the IdP** |
+| **Auth0** | Okta (third party) | Lowest friction, best DX | Sanctioned by catalog §5 for B2B SaaS, but it is another vendor perimeter and a non-Azure default requiring justification per catalog §8 | Defensible fallback if Entra External ID's setup proves disproportionate for a single user |
+| **NextAuth / Auth.js alone (credentials provider)** | **Us** — our DB, our password hashes | Lowest cost today, highest cost forever | Poor as a *provider* — catalog §5 reserves rolling your own identity for "Stripe/Atlassian scale where the identity system is itself a product feature" | **Not recommended as the identity provider** — but see below |
+
+**Recommendation: Entra External ID as the identity provider, Auth.js as
+the OIDC client library in Next.js.** These are not competing choices —
+Auth.js handles the session cookie and the Next.js integration; Entra holds
+the credentials, does password reset and email verification, and can add
+MFA later without app changes. No password ever touches this codebase,
+which is the property that matters. Sam should confirm this pairing before
+Phase 5 (§10.9).
+
+**The bridge that every option needs, identically.** Whatever the IdP, the
+database cannot key off it directly. The pattern:
+
+```sql
+-- Replaces auth.users. One row per person; the IdP owns authentication,
+-- this table owns identity *within the app*.
+create table app_users (
+  id uuid primary key default gen_random_uuid(),
+  external_subject text not null unique,  -- the IdP's `sub` / `oid` claim
+  email text not null,
+  created_at timestamptz not null default now()
+);
+
+-- Replaces auth.uid(). Reads a per-transaction setting the app sets from
+-- the verified session — never from anything the browser supplies.
+-- `true` as the second arg = return null if unset, rather than error,
+-- so an unset connection sees NOTHING rather than failing open.
+create or replace function app.current_user_id()
+returns uuid
+language sql
+stable
+as $$ select nullif(current_setting('app.current_user_id', true), '')::uuid $$;
+```
+
+**As built, this sketch changed in two ways** — see
+`supabase/migrations/20260814120000_phase2_app_users_and_shim.sql`:
+
+1. **Named `public.app_current_user_id()`, not `app.current_user_id()`.**
+   PostgREST only exposes the `public` schema, and the shim has to be
+   callable from the tests via `.rpc()` during the transition. Moves host
+   unchanged either way.
+2. **It checks `auth.uid()` *first*, then the setting** — and falls back to
+   the setting only when `auth.uid()` is null. Order is a security
+   decision, not a style one: while Supabase Auth is still the source of
+   truth it must win, or anyone able to set that GUC could shadow their own
+   verified identity for no benefit. The `auth.uid()` branch is dropped at
+   Phase 5, leaving the setting as the only source.
+
+Every policy then reads `(select app_current_user_id()) = user_id` — the
+same shape, the same intent, one identifier different. And the app side:
+
+```ts
+// lib/db/with-user.ts — the ONLY way to get a user-scoped connection.
+// SET LOCAL, not SET: the setting dies with the transaction, so a pooled
+// connection can never carry one user's identity into the next request.
+export async function withUser<T>(userId: string, fn: (tx: Tx) => Promise<T>) {
+  return pool.transaction(async (tx) => {
+    await tx.query("set local app.current_user_id = $1", [userId]);
+    return fn(tx);
+  });
+}
+```
+
+`userId` comes from the verified session → `app_users` lookup, never from a
+request parameter. That is the same rule CLAUDE.md already states ("the
+backend figures out who the user is from their verified login only"); only
+the mechanism changes.
+
+**Migrating the existing account is trivial (FACT):** §0.1 makes this a
+single-user MVP. There is exactly one real user to re-create, so there is
+no bulk user migration, no password-hash export problem, and no staged
+dual-auth window. This is the single biggest reason to migrate *now*
+rather than after multi-user.
+
+### 10.3 What survives unchanged
+
+Three honest tiers. Tier 2 is where over-claiming usually happens, so it is
+called out separately rather than folded into Tier 1.
+
+**Tier 1 — genuinely untouched, zero edits**
+
+- **Every port and its adapter contract:** `AssessmentProvider`,
+  `EmailSender` (§3). This is the Seam Register (§1) paying off exactly as
+  designed — the adapters change only where they *read a secret*, and only
+  the read, not the logic.
+- **All pure domain logic:** `compute-metrics.ts`, `schema.ts` (including
+  the §6.3 rule-5 content gate), `render-email.ts`, `goals.ts`,
+  `measurements.ts`, `prompts/v1.ts`, and `build-input.ts`'s output
+  shaping.
+- **The external-integration layer:** `lib/gmail/*` (including §0.2's
+  `assertDmarcAligned`), `lib/hevy/*`, `lib/loseit/*`. These talk to
+  third-party APIs and know nothing about where they are hosted.
+- **Every design artifact in this document:** the threat model (§4), the
+  write-back spec (§5), the LLM I/O spec (§6), the send flow (§7). The
+  *mechanisms* they name change host; the *reasoning* does not.
+- **All unit tests** in §9 that don't touch a database.
+- **The single-user gate** (`assertAllowedUser`, §0.1) — only the source of
+  `ONLY_ALLOWED_USER_ID` changes (env var → Key Vault reference).
+- **UI:** React components, design tokens, `globals.css`, routing.
+
+**Tier 2 — same design, mechanical rewrite (do not call this "unchanged")**
+
+Scoped against the schema that **actually exists** (FACT — the eight files
+in `supabase/migrations/`), not the five-table design in §2. §2's
+`assessment_drafts` / `send_log` / `trainer_recipients` / `app_settings`
+were never built; the shipped equivalent is a single `daily_assessments`
+table. The seven real tables, and what each costs:
+
+| Table | `user_id` shape | Policies to rewrite | Notes |
+| --- | --- | --- | --- |
+| `measurements` | `not null default auth.uid()` | 4 | FK gained `on delete cascade` in `20260810160000` — that must be reproduced, not assumed |
+| `workouts` | `not null default auth.uid()` | 4 | |
+| `workout_exercises` | `not null default auth.uid()` | 4 | |
+| `workout_sets` | `not null default auth.uid()` | 4 | |
+| `diet_entries` | `not null default auth.uid()` | 4 | |
+| `goals` | **primary key**, `default auth.uid()` | 4 | `user_id` *is* the PK here — the repoint is a PK-and-FK change, the fiddliest of the seven |
+| `daily_assessments` | `not null`, **no default** (deliberate — the job supplies it) | 1 (select only) | Job writes it via service role; only the read policy needs the shim |
+
+**25 policies total**, every one of them `(select auth.uid()) = user_id`.
+Identical four-policy owner pattern, identical intent, one identifier
+different. The *guarantee* survives; the *text* does not.
+
+- **Column defaults.** Six tables default `user_id` to `auth.uid()`; each
+  becomes `app_current_user_id()`. `daily_assessments` has no default and
+  needs no change.
+- **Grants.** `20260810153000` grants `service_role` a deliberately
+  `DELETE`-free set across seven tables. That set is reproduced verbatim
+  for the new `app_job` role — the least-privilege reasoning in that file's
+  header is the spec, and §10.7 makes it a test.
+- **`CHECK` constraints, unique constraints, indexes** — verbatim, no
+  changes at all.
+- **Every data-access call site.** Same queries, same filters, different
+  syntax: `.from().select()` → SQL, `.rpc(fn)` → `select fn(...)`.
+
+There are **no guard triggers or `SECURITY DEFINER` functions to port** —
+those live only in §2's design. The one definer function that now exists is
+`sync_app_user()`, created *by* this migration and deleted at Phase 5.
+
+**Tier 3 — deleted and replaced**
+
+- `lib/supabase/client.ts`, `server.ts`, `proxy.ts`, `service.ts` → `lib/db/*`
+- `app/login/actions.ts` → Auth.js route handlers
+- `tests/isolation.test.ts` and `tests/helpers/test-users.ts` — must be
+  **rewritten first, not last** (§10.5 Phase 2). They are the only
+  artifact that proves the shim is correct.
+
+### 10.4 Migration sequence
+
+**Two governing rules, from which the whole order follows:**
+
+1. **Never change the client library and the host in the same step.**
+2. **Never change the identity provider and the data plane in the same step.**
+
+Each phase leaves the system in a shippable state. Phases 2 and 3 happen
+**while still fully on Supabase and Vercel**, which is what converts this
+from a risky big-bang into a sequence of individually reversible changes.
+
+| Phase | What | Where it runs | Reversible by | Done when |
+| --- | --- | --- | --- | --- |
+| **0** | **Landing zone, no traffic.** Resource group, VNet + subnets, Flexible Server (private endpoint), Key Vault, App Service + Function App with system-assigned managed identities, App Insights, GitHub Actions OIDC federation | Azure, idle | Deleting the resource group | `psql` reaches the empty server from the App Service subnet, and CI can deploy without a static credential |
+| **1** | *(Optional)* **Secrets → Key Vault while still on Vercel.** Vercel cannot use managed identity, so this needs a service principal and is only a **partial** win — worth doing only if Phases 2–7 will take more than a few weeks | Vercel + Key Vault | Put the values back | One store of record for secrets; dashboards hold a Key Vault reference, not a value |
+| **2** | **★ Make the schema portable — still on Supabase.** Create `app_users` (backfill: 1 row) and `app.current_user_id()`; repoint FKs; rewrite every policy onto the shim; create `app_user` / `app_job` roles; `force row level security` everywhere. Ship the shim's Supabase-era body as `coalesce(current_setting(...), auth.uid())` so both work during transition | Supabase | Standard down-migration | **The existing two-user isolation test passes unchanged in meaning** against the rewritten policies |
+| **3** | **★ Swap supabase-js → `pg` — still on Supabase's Postgres.** Supabase exposes a direct Postgres connection string, so the client library changes while the host does not. Introduce `withUser()`; convert every call site; `.rpc()` → `select fn()` | Vercel → Supabase Postgres | Revert the commit | Isolation tests pass **against the same database** through the new client. At this point the RLS model is *proven portable* before any data moves |
+| **4** | **Database cutover.** `pg_dump` → `pg_restore` into Flexible Server. Single user, tiny dataset (FACT) → a short planned downtime window beats logical-replication complexity | Vercel → Azure Postgres | Repoint the connection string back | Row counts match, indexes present, isolation tests pass against Azure |
+| **5** | **Auth cutover — still on Vercel.** Entra External ID + Auth.js; populate `app_users.external_subject`; retire `auth.getUser()` in favor of one session helper. Drop the `auth.uid()` fallback from the shim | Vercel → Azure Postgres | Revert the commit (Supabase Auth project still live) | Login/logout work; the shim now has exactly one source; Supabase has **no remaining role** in the system |
+| **6** | **App → App Service + Front Door.** Deploy, wire Key Vault references via managed identity, DNS switch | Azure | **DNS back to Vercel** — both point at the same Azure database, so this is a genuine instant rollback | Traffic served from Azure, secrets resolved by managed identity, no `process.env` secret literals |
+| **7** | **trigger.dev → Azure Functions.** Timer trigger; connect to Postgres as `app_job` via managed identity; Anthropic + Gmail credentials from Key Vault. Both kill switches (§2.5) unchanged | Azure | Re-enable the trigger.dev schedule | A draft is generated on schedule with no static database credential anywhere in the job |
+| **8** | **Decommission.** Delete the Supabase project, revoke trigger.dev, **rotate every secret that ever sat on a third-party dashboard** | — | — | Rotation complete. Treat the old values as burned regardless of whether a breach is known — catalog §6 item 2 cites Vercel's 2026 env-var exfiltration as precisely this scenario |
+
+### 10.5 What we lose from Supabase that needs rebuilding
+
+| # | Lost capability | What it gave us | Rebuild cost |
+| --- | --- | --- | --- |
+| 1 | **`auth.uid()`** | The identity primitive every policy is written against | §10.2's `app.current_user_id()` shim. **Low effort, highest consequence** — a wrong shim silently disables every isolation guarantee in this document |
+| 2 | **`auth.users` + cascade** | FK target and `on delete cascade` for user deletion | `app_users` table; all FKs repointed. Note `20260810160000_measurements_cascade_on_user_delete.sql` exists specifically for this chain (FACT) — it must be reproduced, not assumed |
+| 3 | **`service_role`** | The job's RLS-bypassing identity | An `app_job` Postgres role. **This is an upgrade, not a loss:** with Entra managed-identity auth to Postgres there is no `SUPABASE_SERVICE_ROLE_KEY` and no service-role key of any kind. §4 calls that credential "the one credential where a leak equals total compromise" — the migration *deletes it* rather than protecting it better |
+| 4 | **GoTrue** | Signup, login, logout, sessions, password reset, email verification, auth-endpoint rate limiting | The IdP (§10.2). Note password reset and email verification are **not currently wired** (FACT) — the IdP supplies them, so this is net new capability |
+| 5 | **Supabase Studio** | **The documented operator write path** for `trainer_recipients` and `app_settings` — §2.4, §2.5, and §8 all name it | No Azure equivalent. Needs `psql`/pgAdmin over the private endpoint, or a small admin CLI running as `app_job`. **§2.4, §2.5, and §8 become factually wrong the day Studio goes away** and must be edited in the same PR as Phase 4 |
+| 6 | **PostgREST** | The auto-generated REST API behind supabase-js, and `.rpc()` | We write SQL. Covered by Phase 3 |
+| 7 | **Supavisor** (pooling) | Connection pooling, free and invisible | Flexible Server's built-in PgBouncer, **explicitly enabled**. Not optional — see §10.7 |
+| 8 | **Automatic backups / PITR** | On by default | Flexible Server backups + PITR, with retention **explicitly configured**. Also: CLAUDE.md requires separate practice and real environments — that means **two** servers, and the cost line doubles |
+| 9 | **`supabase start`** | One-command local stack | Docker Postgres + migration runner + a local auth story (Entra External ID has no local emulator — ASSUMPTION; likely a dev-only Auth.js credentials provider, which must never be reachable in production builds) |
+| 10 | **Supabase CLI migrations** | `db push` with tracked SQL files | A runner in CI. The tracked-file workflow CLAUDE.md mandates survives intact |
+| 11 | **Log explorer** | Ad-hoc log search | App Insights. See §10.1 #10 — retention makes §3's F-009 redaction rule more load-bearing, not less |
+| 12 | Realtime / Storage / Edge Functions | — | **Nothing to rebuild** — unused (FACT) |
+
+### 10.6 New risks this migration introduces
+
+Not present in §4's threat model, because §4 was written against a
+different platform. These are the additions a future review pass must
+cover:
+
+1. **Table-owner RLS bypass** (§10.0). Stock Postgres exempts the owner from
+   RLS. Mitigation: `force row level security` on every table **and** an
+   application role that does not own the schema.
+2. **Pooled-connection identity leakage — the new isolation risk class.**
+   On Supabase, the isolation question was "did we use the right key." On
+   Azure it becomes "did this pooled connection carry the previous
+   request's `app.current_user_id`." Mitigations: `SET LOCAL` (never `SET`),
+   inside a transaction, with `withUser()` as the *only* way to obtain a
+   user-scoped connection — and a test that asserts a recycled connection
+   has no leftover setting.
+3. **Connection exhaustion.** Functions scale out; Postgres connections do
+   not. PgBouncer plus a bounded pool size, or the job will start failing
+   under conditions that never arose on Supabase.
+4. **Private networking vs. Functions plan.** A VNet-only Postgres is
+   unreachable from Consumption-plan Functions (ASSUMPTION). Decide the
+   plan tier in Phase 0, not Phase 7.
+5. **Loss of trigger.dev's retry/replay semantics.** A failed timer run is
+   simply a missed day unless Durable Functions or an explicit retry is
+   built. §7 step 1's "skip entirely" path is safe here; a *partial* run is
+   the case to think about.
+
+### 10.7 Test plan deltas (extends §9)
+
+| Control | Test | What it proves |
+| --- | --- | --- |
+| `app.current_user_id()` shim | Unit (SQL) | Unset connection → `null`, and therefore **zero rows**, not all rows. The fail-closed property the whole model rests on |
+| Two-user isolation, every table | Rewritten §9 RLS test | Same assertion as today, new mechanism. **Must pass at Phase 2, Phase 3, and Phase 4 independently** — that repetition is what makes the cutover safe |
+| Owner bypass | Integration | Connecting as the schema owner does **not** see other users' rows — i.e. `force row level security` is actually on. Would silently pass today for the wrong reason |
+| Pooled-connection leakage | Integration | Run `withUser(A)` then `withUser(B)` on a pool of size 1; assert B sees nothing of A's, and that a raw checkout between them has no `app.current_user_id` set |
+| `app_job` least privilege | Integration | The job role can do exactly what `20260810153000` granted `service_role` — **no `DELETE` anywhere** (FACT: that migration's stated invariant) — and nothing more |
+| Managed identity, no static creds | Static/CI | No connection string with a password, and no `SUPABASE_SERVICE_ROLE_KEY`, exists in any app setting or repo file after Phase 7 |
+| Guard trigger role branch | Integration | §2.2's trigger, rewritten to `current_user = 'app_job'`, is observed under both roles — same "observed, not assumed" standard F-007 established |
+
+### 10.8 Open questions for Sam — answer before Phase 0
+
+1. **Does the single-user gate (§0.1) survive the migration?** Recommendation:
+   **yes, unchanged.** Multi-user is a genuinely different problem
+   (`user_connections`, per-user OAuth) and combining it with a platform
+   move violates CLAUDE.md's "one change at a time."
+2. **Azure OpenAI now or later?** §6.5 names Azure OpenAI + BAA as the
+   multi-user path, and being on Azure makes that adapter cheap.
+   Recommendation: **later** — it is a `AssessmentProvider` port swap that
+   can happen any day after Phase 8, and doing it during the migration
+   adds a variable for no schedule benefit.
+3. **Entra External ID vs Auth0** (§10.2) — confirm the recommended pairing.
+4. **Region and data residency** — this holds personal health numbers;
+   CLAUDE.md's "be extra careful" list applies.
+5. **Budget.** Flexible Server + App Service + Front Door + Key Vault,
+   **times two environments** (practice and real, per CLAUDE.md), is
+   materially more than Vercel + Supabase free tiers. Worth a real number
+   before Phase 0, not after.
 
 ---
 
