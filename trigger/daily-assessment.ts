@@ -4,7 +4,6 @@ import { schedules } from "@trigger.dev/sdk";
 // that fails to resolve would only show up at deploy time — the exact
 // dev/prod drift LESSONS_LEARNED.md warns about. Relative paths cannot
 // drift.
-import { createServiceClient } from "../lib/supabase/service";
 import { runDailyAssessment } from "../lib/jobs/daily-assessment";
 
 /**
@@ -40,7 +39,10 @@ export const dailyAssessment = schedules.task({
       throw new Error("ONLY_ALLOWED_USER_ID is not set.");
     }
 
-    const result = await runDailyAssessment(createServiceClient(), userId);
+    // No client is passed in any more. The job opens its own connections
+    // as the `app_job` database login, which — unlike the service-role
+    // key this replaced — cannot bypass row-level security.
+    const result = await runDailyAssessment(userId);
 
     console.log(`Daily assessment: ${result.status} for ${result.assessmentDate}`);
 

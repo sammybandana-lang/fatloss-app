@@ -1,14 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach, afterAll } from "vitest";
-import { createClient, SupabaseClient } from "@supabase/supabase-js";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import { config } from "dotenv";
 import { assembleAssessmentInput } from "@/lib/ai/assessment-input";
+import { withUser, withJob, closePool } from "@/lib/db";
 import { kgToLbs } from "@/lib/units";
 import { newTestUser, deleteTestUsers } from "./helpers/test-users";
 
 // Load Supabase credentials from .env.local (no secrets hardcoded)
 config({ path: ".env.local" });
 
-const URL = process.env.NEXT_PUBLIC_SUPABASE_URL!;
 const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 if (!SERVICE_KEY) {
@@ -37,7 +37,10 @@ afterEach(() => {
 
 // Every user signed up here is deleted again afterwards, so repeated runs
 // don't accumulate accounts and exhaust Supabase's hourly signup limit.
-afterAll(deleteTestUsers);
+afterAll(async () => {
+  await closePool();
+  await deleteTestUsers();
+});
 
 const newUser = newTestUser;
 
@@ -106,9 +109,9 @@ async function seedTwoDaysOfData(user: SupabaseClient) {
 
 describe("assembleAssessmentInput", () => {
   it("returns nulls for diet/workout and the correct yesterday_date when nothing was logged", async () => {
-    const { client, id } = await newUser();
+    const { id } = await newUser();
 
-    const input = await assembleAssessmentInput(client, id);
+    const input = await withUser(id, (tx) => assembleAssessmentInput(tx, id));
 
     expect(input).toEqual({
       weight_lbs_start: null,
@@ -127,7 +130,7 @@ describe("assembleAssessmentInput", () => {
     const { client, id } = await newUser();
     await seedTwoDaysOfData(client);
 
-    const input = await assembleAssessmentInput(client, id);
+    const input = await withUser(id, (tx) => assembleAssessmentInput(tx, id));
 
     expect(input).toEqual({
       weight_lbs_start: 210,
@@ -149,7 +152,7 @@ describe("assembleAssessmentInput", () => {
     await insertWorkout(client, `${YESTERDAY}T20:00:00Z`, 80, 8, "Evening Lift");
     await insertWorkout(client, `${TWO_DAYS_AGO}T18:00:00Z`, 9999, 99, "Two Days Ago Workout");
 
-    const input = await assembleAssessmentInput(client, id);
+    const input = await withUser(id, (tx) => assembleAssessmentInput(tx, id));
 
     expect(input.yesterday_workout_names).toEqual(["Morning Run", "Evening Lift"]);
   }, 30000);
@@ -162,7 +165,7 @@ describe("assembleAssessmentInput", () => {
     // already Aug 8 — the exact prod bug this slice fixes.
     await insertWorkout(client, "2026-08-08T00:26:57Z", 80, 10);
 
-    const input = await assembleAssessmentInput(client, id);
+    const input = await withUser(id, (tx) => assembleAssessmentInput(tx, id));
 
     expect(input.yesterday_date).toBe(YESTERDAY);
     expect(input.yesterday_workout_present).toBe(1);
@@ -178,7 +181,7 @@ describe("assembleAssessmentInput", () => {
     // THE WALL: User B's assembled input must reflect User B's (empty)
     // data, not User A's, even though both queries ran within the same
     // test run around the same time.
-    const inputB = await assembleAssessmentInput(userB.client, userB.id);
+    const inputB = await withUser(userB.id, (tx) => assembleAssessmentInput(tx, userB.id));
 
     expect(inputB).toEqual({
       weight_lbs_start: null,
@@ -195,31 +198,32 @@ describe("assembleAssessmentInput", () => {
 });
 
 /**
- * The tests above run under a per-user session client, where Row-Level
- * Security scopes results even if the code forgot to. The daily job does
- * not have that safety net: it uses the service-role key, which bypasses
- * RLS entirely, so the explicit `.eq("user_id", ...)` filters in
- * assembleAssessmentInput are the ONLY thing separating users.
+ * The tests above run as a logged-in person. This one runs as the noon
+ * job, which is a different database login with different privileges —
+ * it can write assessments, where the website cannot.
  *
- * This is the test for that. If any of those filters were dropped, the
- * service-role client would see every user's rows: the diet totals would
- * include other people's calories, and `getGoalWeights`'s `.maybeSingle()`
- * would throw outright once a second user had a goal row.
+ * This block used to describe the job's service-role key, which bypassed
+ * Row-Level Security entirely and left the explicit `.eq("user_id", ...)`
+ * filters as the ONLY thing separating users. That is no longer true:
+ * `app_job` has no bypass powers, and `withJob` stamps the user onto the
+ * transaction, so the database scopes these rows exactly as it does for a
+ * person.
+ *
+ * So this test now proves something stronger than it used to. Asking for
+ * one user returns that user's data and nothing else, and it would
+ * continue to hold even if every explicit filter in
+ * assembleAssessmentInput were deleted — because the wall, not the query,
+ * is what restricts the rows.
  */
-describe.skipIf(!SERVICE_KEY)("assembleAssessmentInput under a service-role client", () => {
-  it("returns only the requested user's data even though RLS is bypassed", async () => {
+describe("assembleAssessmentInput as the background job", () => {
+  it("returns only the requested user's data", async () => {
     const userA = await newUser();
     const userB = await newUser();
 
     await seedTwoDaysOfData(userA.client);
 
-    // The master key: no session, no RLS, sees the whole table.
-    const service = createClient(URL, SERVICE_KEY!, {
-      auth: { persistSession: false, autoRefreshToken: false },
-    });
-
     // Asking for A gets A's real numbers...
-    const inputA = await assembleAssessmentInput(service, userA.id);
+    const inputA = await withJob(userA.id, (tx) => assembleAssessmentInput(tx, userA.id));
     expect(inputA.weight_lbs_start).toBe(210);
     expect(inputA.weight_lbs_goal).toBe(195);
     expect(inputA.weight_lbs_current).toBe(205);
@@ -230,7 +234,7 @@ describe.skipIf(!SERVICE_KEY)("assembleAssessmentInput under a service-role clie
 
     // ...and asking for B, who logged nothing, must come back empty —
     // not A's data, and not a blend of every user in the database.
-    const inputB = await assembleAssessmentInput(service, userB.id);
+    const inputB = await withJob(userB.id, (tx) => assembleAssessmentInput(tx, userB.id));
     expect(inputB).toEqual({
       weight_lbs_start: null,
       weight_lbs_goal: null,

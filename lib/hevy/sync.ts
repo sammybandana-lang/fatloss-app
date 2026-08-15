@@ -1,4 +1,4 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { PoolClient } from "pg";
 import { fetchRecentHevyWorkouts } from "@/lib/hevy/client";
 import {
   mapHevyWorkout,
@@ -13,36 +13,72 @@ import {
  * set_index), so re-syncing the same workout updates rather than duplicates.
  */
 async function upsertExercise(
-  supabase: SupabaseClient,
+  tx: PoolClient,
   userId: string,
   workoutId: string,
   exercise: WorkoutExerciseRow,
   sets: WorkoutSetRow[],
 ) {
-  const { data: exerciseRow, error: exerciseError } = await supabase
-    .from("workout_exercises")
-    .upsert(
-      { ...exercise, workout_id: workoutId, user_id: userId },
-      { onConflict: "workout_id,order_index" },
-    )
-    .select("id")
-    .single();
+  const { rows } = await tx.query(
+    `insert into workout_exercises (
+       user_id, workout_id, order_index, title, notes,
+       exercise_template_id, superset_id
+     )
+     values ($1, $2, $3, $4, $5, $6, $7)
+     on conflict (workout_id, order_index) do update set
+       title                = excluded.title,
+       notes                = excluded.notes,
+       exercise_template_id = excluded.exercise_template_id,
+       superset_id          = excluded.superset_id
+     returning id`,
+    [
+      userId,
+      workoutId,
+      exercise.order_index,
+      exercise.title,
+      exercise.notes,
+      exercise.exercise_template_id,
+      // The column is text; Hevy sends a number. Stringified here rather
+      // than relying on an implicit cast.
+      exercise.superset_id === null ? null : String(exercise.superset_id),
+    ],
+  );
 
-  if (exerciseError) {
-    throw new Error(exerciseError.message);
-  }
+  const exerciseId = rows[0].id as string;
+
   if (sets.length === 0) {
     return;
   }
 
-  const { error: setsError } = await supabase.from("workout_sets").upsert(
-    sets.map((set) => ({ ...set, exercise_id: exerciseRow.id, user_id: userId })),
-    { onConflict: "exercise_id,set_index" },
+  // All sets for this exercise in one statement — see the same idiom in
+  // lib/loseit/sync.ts. The rows travel as a bound parameter, not as SQL.
+  await tx.query(
+    `insert into workout_sets (
+       user_id, exercise_id, set_index, set_type, weight_kg, reps,
+       distance_meters, duration_seconds, rpe, custom_metric
+     )
+     select $1, $2, s.set_index, s.set_type, s.weight_kg, s.reps,
+            s.distance_meters, s.duration_seconds, s.rpe, s.custom_metric
+       from jsonb_to_recordset($3::jsonb) as s(
+         set_index        int,
+         set_type         text,
+         weight_kg        numeric,
+         reps             int,
+         distance_meters  numeric,
+         duration_seconds int,
+         rpe              numeric,
+         custom_metric    numeric
+       )
+     on conflict (exercise_id, set_index) do update set
+       set_type         = excluded.set_type,
+       weight_kg        = excluded.weight_kg,
+       reps             = excluded.reps,
+       distance_meters  = excluded.distance_meters,
+       duration_seconds = excluded.duration_seconds,
+       rpe              = excluded.rpe,
+       custom_metric    = excluded.custom_metric`,
+    [userId, exerciseId, JSON.stringify(sets)],
   );
-
-  if (setsError) {
-    throw new Error(setsError.message);
-  }
 }
 
 /**
@@ -50,25 +86,37 @@ async function upsertExercise(
  * constraint), then its exercises and sets underneath it.
  */
 async function upsertWorkout(
-  supabase: SupabaseClient,
+  tx: PoolClient,
   userId: string,
   mapped: MappedWorkout,
 ) {
-  const { data: workoutRow, error: workoutError } = await supabase
-    .from("workouts")
-    .upsert(
-      { ...mapped.workout, user_id: userId },
-      { onConflict: "user_id,hevy_id" },
-    )
-    .select("id")
-    .single();
+  const { rows } = await tx.query(
+    `insert into workouts (
+       user_id, hevy_id, routine_id, title, description, start_time, end_time
+     )
+     values ($1, $2, $3, $4, $5, $6, $7)
+     on conflict (user_id, hevy_id) do update set
+       routine_id  = excluded.routine_id,
+       title       = excluded.title,
+       description = excluded.description,
+       start_time  = excluded.start_time,
+       end_time    = excluded.end_time
+     returning id`,
+    [
+      userId,
+      mapped.workout.hevy_id,
+      mapped.workout.routine_id,
+      mapped.workout.title,
+      mapped.workout.description,
+      mapped.workout.start_time,
+      mapped.workout.end_time,
+    ],
+  );
 
-  if (workoutError) {
-    throw new Error(workoutError.message);
-  }
+  const workoutId = rows[0].id as string;
 
   for (const { exercise, sets } of mapped.exercises) {
-    await upsertExercise(supabase, userId, workoutRow.id, exercise, sets);
+    await upsertExercise(tx, userId, workoutId, exercise, sets);
   }
 }
 
@@ -81,23 +129,23 @@ async function upsertWorkout(
  * status message.
  *
  * `user_id` is stamped explicitly on all three tables rather than left to
- * the `default auth.uid()` in the schema. The default only works for a
- * session client; the daily job uses a service-role client where
- * `auth.uid()` is NULL, which would fail the NOT NULL constraint. Passing
- * it explicitly makes the same code correct in both callers.
+ * the column default. The default resolves the caller's identity, which is
+ * correct here — but stating it makes the row's owner visible at the point
+ * the row is built, and the database's WITH CHECK policy rejects the write
+ * if the two ever disagreed.
  *
  * Contains no Next.js request-scope calls (no `revalidatePath`) so it can
  * run inside a background job — the server action wrapper handles
  * revalidation for the UI path.
  */
 export async function syncHevyWorkoutsFor(
-  supabase: SupabaseClient,
+  tx: PoolClient,
   userId: string,
 ): Promise<{ workoutCount: number }> {
   const rawWorkouts = await fetchRecentHevyWorkouts();
 
   for (const raw of rawWorkouts) {
-    await upsertWorkout(supabase, userId, mapHevyWorkout(raw));
+    await upsertWorkout(tx, userId, mapHevyWorkout(raw));
   }
 
   return { workoutCount: rawWorkouts.length };

@@ -1,5 +1,6 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { PoolClient } from "pg";
 import type { AssessmentInput } from "@/lib/ai/llm-client";
+import { numberOrNull } from "@/lib/db/rows";
 import { kgToLbs } from "@/lib/units";
 import {
   easternDateString,
@@ -8,44 +9,41 @@ import {
 } from "@/lib/dates";
 
 async function getGoalWeights(
-  supabase: SupabaseClient,
+  tx: PoolClient,
   userId: string,
 ): Promise<{ start: number | null; goal: number | null }> {
-  const { data, error } = await supabase
-    .from("goals")
-    .select("weight_lbs_start, weight_lbs_goal")
-    .eq("user_id", userId)
-    .maybeSingle();
+  const { rows } = await tx.query(
+    `select weight_lbs_start, weight_lbs_goal
+       from goals
+      where user_id = $1`,
+    [userId],
+  );
 
-  if (error) {
-    throw new Error(error.message);
+  if (rows.length === 0) {
+    return { start: null, goal: null };
   }
 
   return {
-    start: data?.weight_lbs_start ?? null,
-    goal: data?.weight_lbs_goal ?? null,
+    start: numberOrNull(rows[0].weight_lbs_start),
+    goal: numberOrNull(rows[0].weight_lbs_goal),
   };
 }
 
 /** Most recent measurement by observed date (not upload date), tie-broken by insert order. */
 async function getCurrentWeight(
-  supabase: SupabaseClient,
+  tx: PoolClient,
   userId: string,
 ): Promise<number | null> {
-  const { data, error } = await supabase
-    .from("measurements")
-    .select("weight_lbs")
-    .eq("user_id", userId)
-    .order("measured_at", { ascending: false })
-    .order("created_at", { ascending: false })
-    .limit(1)
-    .maybeSingle();
+  const { rows } = await tx.query(
+    `select weight_lbs
+       from measurements
+      where user_id = $1
+      order by measured_at desc, created_at desc
+      limit 1`,
+    [userId],
+  );
 
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  return data?.weight_lbs ?? null;
+  return rows.length === 0 ? null : numberOrNull(rows[0].weight_lbs);
 }
 
 /**
@@ -58,28 +56,28 @@ async function getCurrentWeight(
  * the day the food was consumed.
  */
 async function getYesterdaysDiet(
-  supabase: SupabaseClient,
+  tx: PoolClient,
   userId: string,
   easternDateStr: string,
 ): Promise<{ calories: number | null; protein_g: number | null }> {
-  const { data, error } = await supabase
-    .from("diet_entries")
-    .select("calories, protein_g")
-    .eq("user_id", userId)
-    .eq("entry_date", easternDateStr);
+  const { rows } = await tx.query(
+    `select calories, protein_g
+       from diet_entries
+      where user_id = $1
+        and entry_date = $2`,
+    [userId, easternDateStr],
+  );
 
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  if (!data || data.length === 0) {
+  if (rows.length === 0) {
     return { calories: null, protein_g: null };
   }
 
-  return data.reduce(
+  // Both columns are `numeric` and arrive as strings; adding them without
+  // converting would concatenate rather than sum.
+  return rows.reduce(
     (totals, entry) => ({
-      calories: totals.calories + (entry.calories ?? 0),
-      protein_g: totals.protein_g + (entry.protein_g ?? 0),
+      calories: totals.calories + (numberOrNull(entry.calories) ?? 0),
+      protein_g: totals.protein_g + (numberOrNull(entry.protein_g) ?? 0),
     }),
     { calories: 0, protein_g: 0 },
   );
@@ -99,27 +97,25 @@ async function getYesterdaysDiet(
  * before building `AssessmentInput` for the LLM.
  */
 async function getYesterdaysWorkoutStats(
-  supabase: SupabaseClient,
+  tx: PoolClient,
   userId: string,
   easternDateStr: string,
 ): Promise<{ present: 0 | 1; volume_lbs: number | null; names: string[] }> {
   const { start, end } = wideUtcWindowAroundEasternDate(easternDateStr);
 
-  const { data: workouts, error: workoutsError } = await supabase
-    .from("workouts")
-    .select("id, title, start_time")
-    .eq("user_id", userId)
-    .gte("start_time", start)
-    .lt("start_time", end)
-    .order("start_time", { ascending: true });
-
-  if (workoutsError) {
-    throw new Error(workoutsError.message);
-  }
+  const { rows: workouts } = await tx.query(
+    `select id, title, start_time
+       from workouts
+      where user_id = $1
+        and start_time >= $2
+        and start_time < $3
+      order by start_time asc`,
+    [userId, start, end],
+  );
 
   // The window above is a superset; keep only workouts whose start_time
   // actually converts to the target Eastern calendar date.
-  const yesterdaysWorkouts = (workouts ?? []).filter(
+  const yesterdaysWorkouts = workouts.filter(
     (workout) =>
       workout.start_time !== null &&
       easternDateString(new Date(workout.start_time)) === easternDateStr,
@@ -129,36 +125,31 @@ async function getYesterdaysWorkoutStats(
     return { present: 0, volume_lbs: null, names: [] };
   }
 
-  const workoutIds = yesterdaysWorkouts.map((workout) => workout.id);
-  const names = yesterdaysWorkouts.map((workout) => workout.title);
+  const workoutIds = yesterdaysWorkouts.map((workout) => workout.id as string);
+  const names = yesterdaysWorkouts.map((workout) => workout.title as string);
 
-  const { data: exercises, error: exercisesError } = await supabase
-    .from("workout_exercises")
-    .select("id")
-    .eq("user_id", userId)
-    .in("workout_id", workoutIds);
+  const { rows: exercises } = await tx.query(
+    `select id
+       from workout_exercises
+      where user_id = $1
+        and workout_id = any($2::uuid[])`,
+    [userId, workoutIds],
+  );
 
-  if (exercisesError) {
-    throw new Error(exercisesError.message);
-  }
-
-  const exerciseIds = (exercises ?? []).map((exercise) => exercise.id);
-  if (exerciseIds.length === 0) {
+  if (exercises.length === 0) {
     return { present: 1, volume_lbs: kgToLbs(0), names };
   }
 
-  const { data: sets, error: setsError } = await supabase
-    .from("workout_sets")
-    .select("weight_kg, reps")
-    .eq("user_id", userId)
-    .in("exercise_id", exerciseIds);
+  const { rows: sets } = await tx.query(
+    `select weight_kg, reps
+       from workout_sets
+      where user_id = $1
+        and exercise_id = any($2::uuid[])`,
+    [userId, exercises.map((exercise) => exercise.id as string)],
+  );
 
-  if (setsError) {
-    throw new Error(setsError.message);
-  }
-
-  const volumeKg = (sets ?? []).reduce(
-    (total, set) => total + (set.weight_kg ?? 0) * (set.reps ?? 0),
+  const volumeKg = sets.reduce(
+    (total, set) => total + (numberOrNull(set.weight_kg) ?? 0) * (set.reps ?? 0),
     0,
   );
 
@@ -180,33 +171,34 @@ export type AssembledAssessmentInput = AssessmentInput & {
  * goals, most recent measurement, yesterday's diet totals, and yesterday's
  * workout stats.
  *
- * Every query filters on `user_id` explicitly. That is deliberately
- * belt-and-suspenders under a session client, where Row-Level Security
- * already scopes the results — but it is the *only* thing keeping users
- * apart when the caller passes a service-role client, because service role
- * bypasses RLS entirely. The daily job (`lib/jobs/daily-assessment.ts`)
- * has no session to scope by, so it does exactly that. Removing any of
- * these filters would silently mix users' data together in the job path.
+ * Every query still filters on `user_id` explicitly. That used to be the
+ * *only* thing keeping users apart in the job path, because the job held
+ * a service-role client that bypassed Row-Level Security entirely. It no
+ * longer is: the job connects as `app_job`, which has no bypass, and
+ * `withJob` stamps the user onto the transaction so the database scopes
+ * the rows exactly as it does for a logged-in person. The filters stay as
+ * belt-and-suspenders, which is what CLAUDE.md asks for — but they are
+ * now the second line of defence rather than the only one.
  *
- * Takes an explicit `SupabaseClient` rather than creating one internally
- * from `@/lib/supabase/server`, so it can be exercised directly against a
- * real per-user client in tests, and so the job can hand it a service-role
- * client. `createClient()` there calls `cookies()`, which throws outside a
- * real Next.js request scope — the same issue hit (and fixed the same way)
- * for `getLatestWorkout` and the LoseIt diet queries.
+ * The four fetches run in sequence, not in parallel. A single database
+ * connection cannot serve concurrent queries, and this whole function
+ * runs inside one transaction so that every number it returns describes
+ * the same instant.
+ *
+ * Takes an explicit transaction rather than opening its own, so it can be
+ * exercised directly in tests and so the caller decides whether it runs
+ * as the website or as the job.
  */
 export async function assembleAssessmentInput(
-  supabase: SupabaseClient,
+  tx: PoolClient,
   userId: string,
 ): Promise<AssembledAssessmentInput> {
   const easternDateStr = yesterdayInEasternTime();
 
-  const [{ start, goal }, currentWeight, diet, workoutStats] = await Promise.all([
-    getGoalWeights(supabase, userId),
-    getCurrentWeight(supabase, userId),
-    getYesterdaysDiet(supabase, userId, easternDateStr),
-    getYesterdaysWorkoutStats(supabase, userId, easternDateStr),
-  ]);
+  const { start, goal } = await getGoalWeights(tx, userId);
+  const currentWeight = await getCurrentWeight(tx, userId);
+  const diet = await getYesterdaysDiet(tx, userId, easternDateStr);
+  const workoutStats = await getYesterdaysWorkoutStats(tx, userId, easternDateStr);
 
   return {
     weight_lbs_start: start,

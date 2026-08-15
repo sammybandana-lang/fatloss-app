@@ -36,15 +36,16 @@ import { Pool, type PoolClient } from "pg";
  *
  * ON `server-only`
  *
- * Deliberately not imported, for the same reason `lib/supabase/service.ts`
- * omits it: that package resolves to a module which throws unless the
- * bundler sets the `react-server` condition, which the background job's
- * bundler does not. The `typeof window` guard below gives the same
- * protection — fail loudly if this is ever reached from a browser bundle
- * — in both runtimes, with no extra dependency.
+ * Deliberately not imported. That package resolves to a module which
+ * throws unless the bundler sets the `react-server` condition, which the
+ * background job's bundler does not — the import would crash the job at
+ * startup. The `typeof window` guard below gives the same protection —
+ * fail loudly if this is ever reached from a browser bundle — in both
+ * runtimes, with no extra dependency.
  */
 
 let pool: Pool | null = null;
+let jobPool: Pool | null = null;
 
 /**
  * The shared connection pool, created on first use.
@@ -149,6 +150,22 @@ export async function withUser<T>(
   userId: string,
   fn: (tx: PoolClient) => Promise<T>,
 ): Promise<T> {
+  return runStamped(getPool(), userId, fn);
+}
+
+/**
+ * Opens a transaction, stamps it with `userId`, and runs `fn` inside it.
+ *
+ * Shared by withUser and withJob so there is exactly one implementation
+ * of the rule this whole file exists to enforce. Two copies would be two
+ * places for the identity handling to drift apart, and the one that
+ * drifted would be the one nobody was looking at.
+ */
+async function runStamped<T>(
+  targetPool: Pool,
+  userId: string,
+  fn: (tx: PoolClient) => Promise<T>,
+): Promise<T> {
   if (!UUID_RE.test(userId)) {
     // Caught here rather than left to the database's own cast error,
     // which arrives as an opaque "invalid input syntax for type uuid"
@@ -156,7 +173,7 @@ export async function withUser<T>(
     throw new Error("withUser: userId is not a valid UUID.");
   }
 
-  const client = await getPool().connect();
+  const client = await targetPool.connect();
   try {
     await client.query("begin");
     await client.query("select set_config('app.current_user_id', $1, true)", [
@@ -183,11 +200,78 @@ export async function withUser<T>(
 }
 
 /**
- * Closes the pool. For test teardown and graceful shutdown; a long-lived
- * server should not call this.
+ * The background job's pool, created on first use.
+ *
+ * A separate login from the website's, because the job writes
+ * `daily_assessments` and the website must not — those rows hold
+ * LLM-authored text that gets emailed to a trainer, and "the job is the
+ * only writer" is a deliberate property of the design.
+ *
+ * Falls back to DATABASE_URL when DATABASE_URL_JOB is unset, so a
+ * single-connection setup still runs. That fallback is a convenience for
+ * local work, not the intended production shape — see .env.example.
+ */
+function getJobPool(): Pool {
+  if (typeof window !== "undefined") {
+    throw new Error(
+      "lib/db was loaded in a browser context. Database credentials must never reach the client.",
+    );
+  }
+
+  if (jobPool) return jobPool;
+
+  const connectionString =
+    process.env.DATABASE_URL_JOB ?? process.env.DATABASE_URL;
+  if (!connectionString) {
+    throw new Error(
+      "Missing required environment variable: DATABASE_URL_JOB (or DATABASE_URL)",
+    );
+  }
+
+  jobPool = new Pool({
+    connectionString: withoutSslParams(connectionString),
+    ssl: sslConfig(),
+    // The job runs one user at a time on a schedule; it has no reason to
+    // hold more than a couple of connections.
+    max: Number(process.env.DATABASE_JOB_POOL_MAX ?? 2),
+    idleTimeoutMillis: 30_000,
+    connectionTimeoutMillis: 10_000,
+  });
+
+  return jobPool;
+}
+
+/**
+ * Runs `fn` as the background job, stamped with the user being processed.
+ *
+ * The identity is applied exactly as it is for a web request, so the
+ * database scopes the job's rows the same way it scopes a person's. This
+ * is the difference from the service-role client it replaces, which
+ * ignored row-level security and left hand-written `user_id` filters as
+ * the only thing keeping users apart.
+ *
+ * A job that looped over the wrong list of users would now read and write
+ * nothing it had not explicitly stamped — the mistake becomes empty
+ * results instead of somebody else's health data.
+ */
+export async function withJob<T>(
+  userId: string,
+  fn: (tx: PoolClient) => Promise<T>,
+): Promise<T> {
+  return runStamped(getJobPool(), userId, fn);
+}
+
+/**
+ * Closes both pools. For test teardown and graceful shutdown; a
+ * long-lived server should not call this.
  */
 export async function closePool(): Promise<void> {
-  if (!pool) return;
-  await pool.end();
-  pool = null;
+  if (pool) {
+    await pool.end();
+    pool = null;
+  }
+  if (jobPool) {
+    await jobPool.end();
+    jobPool = null;
+  }
 }

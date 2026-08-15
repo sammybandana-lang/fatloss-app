@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
+import { getCurrentUserId } from "@/lib/auth/current-user";
+import { withUser } from "@/lib/db";
+import { numberOrNull, requiredNumber } from "@/lib/db/rows";
 import { getWorkoutsForDate, type LatestWorkoutExercise } from "@/lib/hevy/queries";
 import { getDietTotalsForDate } from "@/lib/loseit/queries";
 import { yesterdayInEasternTime, formatDateShort } from "@/lib/dates";
@@ -35,39 +37,69 @@ function formatExerciseLine(exercise: LatestWorkoutExercise): string {
   return [exercise.title, ...setStrings].join(" · ");
 }
 
+interface LatestMeasurement {
+  id: string;
+  weight_lbs: number;
+  body_fat_pct: number | null;
+  waist_in: number | null;
+  hips_in: number | null;
+  neck_in: number | null;
+  created_at: Date;
+}
+
 export default async function HomePage() {
-  const supabase = await createClient();
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
   // This is the real "must be signed in" check — it runs on the server and
   // trusts only the verified session, never the screen.
-  if (!user) {
+  const userId = await getCurrentUserId();
+
+  if (!userId) {
     redirect("/login");
   }
-
-  const { data: latestMeasurements, error } = await supabase
-    .from("measurements")
-    .select("id, weight_lbs, body_fat_pct, waist_in, hips_in, neck_in, created_at")
-    .order("created_at", { ascending: false })
-    .limit(1);
-
-  if (error) {
-    throw new Error(error.message);
-  }
-
-  const latestMeasurement = latestMeasurements?.[0] ?? null;
 
   const yesterday = yesterdayInEasternTime();
   const yesterdayLabel = formatDateShort(yesterday);
 
-  const [goals, dietTotals, workouts] = await Promise.all([
-    getGoals(),
-    getDietTotalsForDate(supabase, yesterday),
-    getWorkoutsForDate(supabase, yesterday),
-  ]);
+  // One transaction for all three reads, run in sequence rather than in
+  // parallel. A single database connection cannot serve concurrent
+  // queries, and giving each read its own connection would mean one
+  // dashboard load holding four at once — which is how a pool runs dry
+  // (ARCHITECTURE.md §10.6 #3). It also means all three see the same
+  // instant, so the dashboard cannot show a measurement that a workout
+  // list taken a moment later disagrees with.
+  const { latestMeasurement, dietTotals, workouts } = await withUser(
+    userId,
+    async (tx) => {
+      const { rows } = await tx.query(
+        `select id, weight_lbs, body_fat_pct, waist_in, hips_in, neck_in, created_at
+           from measurements
+          order by created_at desc
+          limit 1`,
+      );
+
+      const measurement: LatestMeasurement | null =
+        rows.length === 0
+          ? null
+          : {
+              id: rows[0].id,
+              weight_lbs: requiredNumber(rows[0].weight_lbs),
+              body_fat_pct: numberOrNull(rows[0].body_fat_pct),
+              waist_in: numberOrNull(rows[0].waist_in),
+              hips_in: numberOrNull(rows[0].hips_in),
+              neck_in: numberOrNull(rows[0].neck_in),
+              created_at: rows[0].created_at,
+            };
+
+      return {
+        latestMeasurement: measurement,
+        dietTotals: await getDietTotalsForDate(tx, yesterday),
+        workouts: await getWorkoutsForDate(tx, yesterday),
+      };
+    },
+  );
+
+  // Its own transaction: getGoals is shared with the goals form, which
+  // calls it outside any transaction of ours.
+  const goals = await getGoals();
 
   return (
     <PageShell>

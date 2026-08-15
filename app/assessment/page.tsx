@@ -1,19 +1,15 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { createClient } from "@/lib/supabase/server";
+import { getCurrentUserId } from "@/lib/auth/current-user";
 import { AssessmentClient } from "./AssessmentClient";
 import { PageShell } from "@/app/_components/design/PageShell";
 
 export default async function AssessmentPage() {
-  const supabase = await createClient();
-
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
   // Real "must be signed in" check — runs on the server against the
   // verified session, never trusting the screen.
-  if (!user) {
+  const userId = await getCurrentUserId();
+
+  if (!userId) {
     redirect("/login");
   }
 

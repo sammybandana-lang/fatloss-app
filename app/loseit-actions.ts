@@ -1,6 +1,7 @@
 "use server";
 
-import { createClient } from "@/lib/supabase/server";
+import { getCurrentUserId } from "@/lib/auth/current-user";
+import { withUser } from "@/lib/db";
 import { importLoseItFor, type ImportResult } from "@/lib/loseit/sync";
 import { getLatestDayDietTotals, type LatestDayTotals } from "@/lib/loseit/queries";
 
@@ -10,17 +11,16 @@ import { getLatestDayDietTotals, type LatestDayTotals } from "@/lib/loseit/queri
  * in `lib/loseit/sync.ts`, which the daily background job also uses.
  */
 export async function importLoseItToday(): Promise<ImportResult> {
-  const supabase = await createClient();
+  const userId = await getCurrentUserId();
 
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
+  if (!userId) {
     return { ok: false, error: "Not authenticated" };
   }
 
-  return importLoseItFor(supabase, user.id);
+  // One transaction for the whole daily report: a batch that fails
+  // partway leaves nothing behind, which is the same reasoning the
+  // parser already applies to malformed rows.
+  return withUser(userId, (tx) => importLoseItFor(tx, userId));
 }
 
 /**
@@ -29,6 +29,11 @@ export async function importLoseItToday(): Promise<ImportResult> {
  * server-only query functions directly, only server actions.
  */
 export async function getLatestDayDietTotalsAction(): Promise<LatestDayTotals | null> {
-  const supabase = await createClient();
-  return getLatestDayDietTotals(supabase);
+  const userId = await getCurrentUserId();
+
+  if (!userId) {
+    return null;
+  }
+
+  return withUser(userId, (tx) => getLatestDayDietTotals(tx));
 }

@@ -14,18 +14,48 @@ vi.mock("@/lib/loseit/parser", () => ({
 }));
 
 const mockGetUser = vi.fn();
-const mockSelect = vi.fn();
-const mockUpsert = vi.fn(() => ({ select: mockSelect }));
-const mockFrom = vi.fn(() => ({ upsert: mockUpsert }));
 
 vi.mock("@/lib/supabase/server", () => ({
   createClient: vi.fn(async () => ({
     auth: { getUser: mockGetUser },
-    from: mockFrom,
   })),
 }));
 
+/**
+ * The database is mocked, not connected to.
+ *
+ * These tests cover the import's own logic — what it does with a missing
+ * email, a parser failure, and the inserted/skipped counts — none of
+ * which needs a real database. `withUser` is stubbed to hand the code a
+ * transaction whose only job is to record the SQL it was given.
+ *
+ * That `withUser` genuinely scopes a query to one user is proven for
+ * real, against the real database, in tests/db-connection.test.ts. Doing
+ * it again here would make this file slow and would not check anything
+ * new.
+ */
+const mockQuery = vi.fn();
+
+vi.mock("@/lib/db", () => ({
+  withUser: vi.fn(
+    async <T,>(_userId: string, fn: (tx: { query: typeof mockQuery }) => Promise<T>) =>
+      fn({ query: mockQuery }),
+  ),
+}));
+
 const AUTHED_USER = { id: "user-1" };
+
+/** The rows the import actually sent, decoded from the query's parameters. */
+function rowsSentToTheDatabase(): DietEntryRow[] {
+  const [, params] = mockQuery.mock.calls[0] as [string, [string, string]];
+  return JSON.parse(params[1]);
+}
+
+/** The user id the import stamped every row with. */
+function userIdSentToTheDatabase(): string {
+  const [, params] = mockQuery.mock.calls[0] as [string, [string, string]];
+  return params[0];
+}
 
 function sampleRow(overrides: Partial<DietEntryRow> = {}): DietEntryRow {
   return {
@@ -52,7 +82,8 @@ describe("importLoseItToday", () => {
     vi.clearAllMocks();
     vi.spyOn(console, "log").mockImplementation(() => {});
     mockGetUser.mockResolvedValue({ data: { user: AUTHED_USER } });
-    mockSelect.mockResolvedValue({ data: [], error: null });
+    // Every inserted row comes back with its id; none by default.
+    mockQuery.mockResolvedValue({ rows: [] });
   });
 
   afterEach(() => {
@@ -75,7 +106,7 @@ describe("importLoseItToday", () => {
 
     expect(result).toEqual({ ok: true, no_email: true });
     expect(parseLoseItCsv).not.toHaveBeenCalled();
-    expect(mockFrom).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 
   it("rejects the whole batch when the parser throws (e.g. bad header)", async () => {
@@ -90,31 +121,29 @@ describe("importLoseItToday", () => {
       ok: false,
       error: "This doesn't look like a LoseIt daily report.",
     });
-    expect(mockFrom).not.toHaveBeenCalled();
+    expect(mockQuery).not.toHaveBeenCalled();
   });
 
   it("inserts every row when none are duplicates", async () => {
     const parsedRows = [sampleRow(), sampleRow({ name: "Brown Rice" })];
     vi.mocked(getMostRecentLoseItCsv).mockResolvedValue("csv-text");
     vi.mocked(parseLoseItCsv).mockReturnValue(parsedRows);
-    mockSelect.mockResolvedValue({
-      data: [{ id: "row-1" }, { id: "row-2" }],
-      error: null,
-    });
+    mockQuery.mockResolvedValue({ rows: [{ id: "row-1" }, { id: "row-2" }] });
 
     const result = await importLoseItToday();
 
     expect(result).toEqual({ ok: true, inserted: 2, skipped_dupes: 0 });
-    expect(mockFrom).toHaveBeenCalledWith("diet_entries");
-    expect(mockUpsert).toHaveBeenCalledWith(
-      [
-        { ...parsedRows[0], user_id: AUTHED_USER.id },
-        { ...parsedRows[1], user_id: AUTHED_USER.id },
-      ],
-      {
-        onConflict: "user_id,entry_date,name,food_type,calories",
-        ignoreDuplicates: true,
-      },
+
+    // One statement for the whole batch, not one per row.
+    expect(mockQuery).toHaveBeenCalledTimes(1);
+    expect(rowsSentToTheDatabase()).toEqual(parsedRows);
+    expect(userIdSentToTheDatabase()).toBe(AUTHED_USER.id);
+
+    // The duplicate rule is what makes a re-run harmless, so assert the
+    // statement actually carries it rather than trusting the comment.
+    const [sql] = mockQuery.mock.calls[0] as [string, unknown];
+    expect(sql).toContain(
+      "on conflict (user_id, entry_date, name, food_type, calories) do nothing",
     );
   });
 
@@ -127,9 +156,9 @@ describe("importLoseItToday", () => {
     vi.mocked(getMostRecentLoseItCsv).mockResolvedValue("csv-text");
     vi.mocked(parseLoseItCsv).mockReturnValue(parsedRows);
     // Only one of the three rows was newly inserted; the rest hit the
-    // (user_id, entry_date, name, food_type, calories) conflict and were
-    // skipped, so `ignoreDuplicates` never returns them.
-    mockSelect.mockResolvedValue({ data: [{ id: "row-1" }], error: null });
+    // (user_id, entry_date, name, food_type, calories) conflict, and
+    // `do nothing` means the statement never returns them.
+    mockQuery.mockResolvedValue({ rows: [{ id: "row-1" }] });
 
     const result = await importLoseItToday();
 
@@ -139,13 +168,13 @@ describe("importLoseItToday", () => {
     }
   });
 
-  it("returns the DB error message when the upsert fails", async () => {
+  it("returns the DB error message when the insert fails", async () => {
     vi.mocked(getMostRecentLoseItCsv).mockResolvedValue("csv-text");
     vi.mocked(parseLoseItCsv).mockReturnValue([sampleRow()]);
-    mockSelect.mockResolvedValue({
-      data: null,
-      error: { message: "connection to database failed" },
-    });
+    // node-postgres throws where the Supabase client returned an error
+    // field. The import must still convert it to a result value rather
+    // than letting it escape to the caller.
+    mockQuery.mockRejectedValue(new Error("connection to database failed"));
 
     const result = await importLoseItToday();
 
@@ -155,7 +184,7 @@ describe("importLoseItToday", () => {
   it("processes real LoseIt CSV end-to-end", async () => {
     // Unlike every other test in this file, use the real parser against the
     // real fixture bytes — this is the point of the test: proving the whole
-    // pipeline (CSV -> parser -> upsert) handles real LoseIt quirks like
+    // pipeline (CSV -> parser -> insert) handles real LoseIt quirks like
     // quoted commas in names and a mix of food/exercise rows.
     const actualParser = await vi.importActual<typeof import("@/lib/loseit/parser")>(
       "@/lib/loseit/parser",
@@ -169,20 +198,21 @@ describe("importLoseItToday", () => {
     vi.mocked(getMostRecentLoseItCsv).mockResolvedValue(fixtureCsv);
 
     mockGetUser.mockResolvedValue({ data: { user: { id: "test-user-123" } } });
-    mockSelect.mockResolvedValue({
-      data: Array.from({ length: 6 }, (_, i) => ({ id: `row-${i}` })),
-      error: null,
+    mockQuery.mockResolvedValue({
+      rows: Array.from({ length: 6 }, (_, i) => ({ id: `row-${i}` })),
     });
 
     const result = await importLoseItToday();
 
     expect(result).toEqual({ ok: true, inserted: 6, skipped_dupes: 0 });
-    expect(mockUpsert).toHaveBeenCalledTimes(1);
+    expect(mockQuery).toHaveBeenCalledTimes(1);
 
-    type UpsertedRow = DietEntryRow & { user_id: string };
-    const [insertedRows] = mockUpsert.mock.calls[0] as unknown as [UpsertedRow[], unknown];
+    const insertedRows = rowsSentToTheDatabase();
     expect(insertedRows).toHaveLength(6);
-    expect(insertedRows.every((row) => row.user_id === "test-user-123")).toBe(true);
+    // The owner is now one bound parameter applied to every row, rather
+    // than a user_id stamped onto each row object — same guarantee, one
+    // place instead of N.
+    expect(userIdSentToTheDatabase()).toBe("test-user-123");
     expect(insertedRows[0].name).toBe("Ragi Millet Dosa Batter");
     expect(insertedRows[5].name).toBe("Egg Whites, Uncooked, Large Egg");
     expect(insertedRows[3].protein_g).toBe(12);

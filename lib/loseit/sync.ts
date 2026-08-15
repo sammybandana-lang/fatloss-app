@@ -1,10 +1,6 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
+import type { PoolClient } from "pg";
 import { getMostRecentLoseItCsv } from "@/lib/gmail/client";
 import { parseLoseItCsv } from "@/lib/loseit/parser";
-
-// Matches the `unique (user_id, entry_date, name, food_type, calories)`
-// constraint in supabase/migrations/20260803192711_create_diet_entries.sql.
-const DIET_ENTRIES_CONFLICT_COLUMNS = "user_id,entry_date,name,food_type,calories";
 
 export type ImportResult =
   | { ok: true; inserted: number; skipped_dupes: number }
@@ -12,9 +8,11 @@ export type ImportResult =
   | { ok: false; error: string };
 
 /**
- * Pulls today's LoseIt daily-report email (if any) and upserts its rows into
+ * Pulls today's LoseIt daily-report email (if any) and inserts its rows into
  * `diet_entries` for `userId`. Idempotent: re-running against the same email
- * updates nothing new — duplicates are skipped, not re-inserted.
+ * inserts nothing new — duplicates are skipped, not re-inserted, via the
+ * `unique (user_id, entry_date, name, food_type, calories)` constraint in
+ * 20260803192711_create_diet_entries.sql.
  *
  * The whole batch is rejected on any parsing problem (bad header, a
  * malformed row) rather than inserting whatever happened to parse — a
@@ -22,7 +20,7 @@ export type ImportResult =
  * every outcome, including unexpected errors, comes back as a result value.
  */
 export async function importLoseItFor(
-  supabase: SupabaseClient,
+  tx: PoolClient,
   userId: string,
 ): Promise<ImportResult> {
   try {
@@ -36,21 +34,46 @@ export async function importLoseItFor(
       return { ok: true, inserted: 0, skipped_dupes: 0 };
     }
 
-    const rows = parsedRows.map((row) => ({ ...row, user_id: userId }));
+    // All rows in one statement rather than one round trip each. A daily
+    // report is dozens of rows, and `jsonb_to_recordset` turns the whole
+    // batch into something the insert can select from — the parsed rows
+    // still travel as a single bound parameter, never as SQL text.
+    //
+    // `on conflict do nothing ... returning id` yields a row only for
+    // entries that were genuinely new, which is what the counts below
+    // report.
+    const { rows: insertedRows } = await tx.query(
+      `insert into diet_entries (
+         user_id, entry_date, name, food_type, quantity, units, calories,
+         fat_g, protein_g, carbs_g, saturated_fat_g, sugars_g, fiber_g,
+         cholesterol_mg, sodium_mg
+       )
+       select $1, e.entry_date, e.name, e.food_type, e.quantity, e.units,
+              e.calories, e.fat_g, e.protein_g, e.carbs_g,
+              e.saturated_fat_g, e.sugars_g, e.fiber_g, e.cholesterol_mg,
+              e.sodium_mg
+         from jsonb_to_recordset($2::jsonb) as e(
+           entry_date      date,
+           name            text,
+           food_type       text,
+           quantity        numeric,
+           units           text,
+           calories        numeric,
+           fat_g           numeric,
+           protein_g       numeric,
+           carbs_g         numeric,
+           saturated_fat_g numeric,
+           sugars_g        numeric,
+           fiber_g         numeric,
+           cholesterol_mg  numeric,
+           sodium_mg       numeric
+         )
+       on conflict (user_id, entry_date, name, food_type, calories) do nothing
+       returning id`,
+      [userId, JSON.stringify(parsedRows)],
+    );
 
-    const { data: insertedRows, error } = await supabase
-      .from("diet_entries")
-      .upsert(rows, {
-        onConflict: DIET_ENTRIES_CONFLICT_COLUMNS,
-        ignoreDuplicates: true,
-      })
-      .select("id");
-
-    if (error) {
-      return { ok: false, error: error.message };
-    }
-
-    const inserted = insertedRows?.length ?? 0;
+    const inserted = insertedRows.length;
     const skipped_dupes = parsedRows.length - inserted;
 
     console.log(`LoseIt import: ${inserted} inserted, ${skipped_dupes} skipped as duplicates`);

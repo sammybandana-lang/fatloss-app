@@ -1,7 +1,10 @@
 import { describe, it, expect, afterAll } from "vitest";
-import type { SupabaseClient } from "@supabase/supabase-js";
+import { config } from "dotenv";
 import { getLatestDayDietTotals } from "../lib/loseit/queries";
-import { newTestUser, deleteTestUsers } from "./helpers/test-users";
+import { newTestUser, deleteTestUsers, type TestUser } from "./helpers/test-users";
+import { withUser, closePool } from "../lib/db";
+
+config({ path: ".env.local" });
 
 // These tests hit the real (dev) Supabase project directly, the same way
 // tests/isolation.test.ts does. A fully-mocked Supabase client would just
@@ -11,11 +14,17 @@ import { newTestUser, deleteTestUsers } from "./helpers/test-users";
 
 // Every user signed up here is deleted again afterwards, so repeated runs
 // don't accumulate accounts and exhaust Supabase's hourly signup limit.
-afterAll(deleteTestUsers);
+afterAll(async () => {
+  await closePool();
+  await deleteTestUsers();
+});
 
-// Make a brand-new signed-in user, return their own client.
-async function newUser(): Promise<SupabaseClient> {
-  return (await newTestUser()).client;
+// Make a brand-new signed-in user. Rows are still seeded through their
+// Supabase client — that path is unchanged and is not what these tests
+// are checking. The query under test now runs on the direct connection,
+// so both halves need to agree about who the user is.
+async function newUser(): Promise<TestUser> {
+  return newTestUser();
 }
 
 function dietEntry(overrides: {
@@ -33,7 +42,7 @@ describe("getLatestDayDietTotals (against a real test DB)", () => {
   it("returns null when the user has no diet entries at all", async () => {
     const user = await newUser();
 
-    const result = await getLatestDayDietTotals(user);
+    const result = await withUser(user.id, (tx) => getLatestDayDietTotals(tx));
 
     expect(result).toBeNull();
   }, 30000);
@@ -41,7 +50,7 @@ describe("getLatestDayDietTotals (against a real test DB)", () => {
   it("returns totals for only the most recent entry_date, ignoring an older day", async () => {
     const user = await newUser();
 
-    const { error } = await user.from("diet_entries").insert([
+    const { error } = await user.client.from("diet_entries").insert([
       dietEntry({
         entry_date: "2026-08-05",
         name: "Yesterday Food",
@@ -69,7 +78,7 @@ describe("getLatestDayDietTotals (against a real test DB)", () => {
     ]);
     expect(error).toBeNull();
 
-    const result = await getLatestDayDietTotals(user);
+    const result = await withUser(user.id, (tx) => getLatestDayDietTotals(tx));
 
     expect(result).toEqual({
       entryDate: "2026-08-06",
@@ -79,14 +88,14 @@ describe("getLatestDayDietTotals (against a real test DB)", () => {
       carbs_g: 9,
     });
 
-    await user.from("diet_entries").delete().in("entry_date", ["2026-08-05", "2026-08-06"]);
+    await user.client.from("diet_entries").delete().in("entry_date", ["2026-08-05", "2026-08-06"]);
   }, 30000);
 
   it("returns totals for today's date when that's the only day with entries", async () => {
     const user = await newUser();
     const today = new Date().toISOString().slice(0, 10);
 
-    const { error } = await user.from("diet_entries").insert([
+    const { error } = await user.client.from("diet_entries").insert([
       dietEntry({
         entry_date: today,
         name: "Today Food",
@@ -98,7 +107,7 @@ describe("getLatestDayDietTotals (against a real test DB)", () => {
     ]);
     expect(error).toBeNull();
 
-    const result = await getLatestDayDietTotals(user);
+    const result = await withUser(user.id, (tx) => getLatestDayDietTotals(tx));
 
     expect(result).toEqual({
       entryDate: today,
@@ -108,6 +117,6 @@ describe("getLatestDayDietTotals (against a real test DB)", () => {
       carbs_g: 4,
     });
 
-    await user.from("diet_entries").delete().eq("entry_date", today);
+    await user.client.from("diet_entries").delete().eq("entry_date", today);
   }, 30000);
 });

@@ -1,4 +1,5 @@
-import type { SupabaseClient } from "@supabase/supabase-js";
+import { withJob } from "@/lib/db";
+import { numberOrNull } from "@/lib/db/rows";
 import { yesterdayInEasternTime } from "@/lib/dates";
 import { syncHevyWorkoutsFor } from "@/lib/hevy/sync";
 import { importLoseItFor } from "@/lib/loseit/sync";
@@ -14,10 +15,13 @@ import { sendEmail } from "@/lib/gmail/send";
  * Lives here rather than in `trigger/` so it can be tested with plain
  * vitest — nothing in this file imports trigger.dev.
  *
- * IMPORTANT: `supabase` is a service-role client, which bypasses
- * Row-Level Security. Every query below scopes to `userId` explicitly, and
- * that is the only thing separating users in this code path. See
- * `lib/supabase/service.ts`.
+ * The job connects as `app_job`, a database login with NO power to
+ * bypass Row-Level Security, and `withJob` stamps the user being
+ * processed onto each transaction. So the database scopes these rows the
+ * same way it scopes a logged-in person's — a change from the
+ * service-role client this replaced, where hand-written `user_id` filters
+ * were the only thing separating users. Those filters remain as a second
+ * line of defence.
  */
 
 export type DailyAssessmentResult =
@@ -91,7 +95,6 @@ function resolveRecipient(intended: string): string {
 
 /** Sends the email, then stamps `sent_at`. */
 async function sendAndRecord(
-  supabase: SupabaseClient,
   userId: string,
   assessmentDate: string,
   emailData: TrainerEmailData,
@@ -99,19 +102,24 @@ async function sendAndRecord(
   const email = buildTrainerEmail(emailData);
   await sendEmail({ ...email, to: resolveRecipient(email.to) });
 
-  const { error } = await supabase
-    .from("daily_assessments")
-    .update({ sent_at: new Date().toISOString() })
-    .eq("user_id", userId)
-    .eq("assessment_date", assessmentDate);
-
-  if (error) {
-    throw new Error(`Email sent but recording it failed: ${error.message}`);
+  try {
+    await withJob(userId, (tx) =>
+      tx.query(
+        `update daily_assessments
+            set sent_at = now()
+          where user_id = $1
+            and assessment_date = $2`,
+        [userId, assessmentDate],
+      ),
+    );
+  } catch (error) {
+    throw new Error(
+      `Email sent but recording it failed: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 }
 
 export async function runDailyAssessment(
-  supabase: SupabaseClient,
   userId: string,
 ): Promise<DailyAssessmentResult> {
   const assessmentDate = yesterdayInEasternTime();
@@ -119,16 +127,37 @@ export async function runDailyAssessment(
   // Idempotency guard. trigger.dev retries a failed task, and the schedule
   // can also be fired by hand from the dashboard — neither may produce a
   // second email for a day already sent.
-  const { data: existing, error: existingError } = await supabase
-    .from("daily_assessments")
-    .select(STORED_COLUMNS)
-    .eq("user_id", userId)
-    .eq("assessment_date", assessmentDate)
-    .maybeSingle<StoredAssessment & { sent_at: string | null }>();
+  const existing = await withJob(userId, async (tx) => {
+    const { rows } = await tx.query(
+      `select ${STORED_COLUMNS}
+         from daily_assessments
+        where user_id = $1
+          and assessment_date = $2`,
+      [userId, assessmentDate],
+    );
 
-  if (existingError) {
-    throw new Error(`Could not read existing assessment: ${existingError.message}`);
-  }
+    if (rows.length === 0) {
+      return null;
+    }
+
+    // The weight and macro columns are `numeric` and arrive as strings.
+    // These feed the email that goes to the trainer, so a string here
+    // would render as a plausible-looking but unformatted number.
+    const row = rows[0];
+    return {
+      short_assessment: row.short_assessment as string,
+      grade: row.grade as AssessmentGrade,
+      weight_lbs_start: numberOrNull(row.weight_lbs_start),
+      weight_lbs_goal: numberOrNull(row.weight_lbs_goal),
+      weight_lbs_current: numberOrNull(row.weight_lbs_current),
+      calories: numberOrNull(row.calories),
+      protein_g: numberOrNull(row.protein_g),
+      workout_present: row.workout_present as boolean,
+      workout_volume_lbs: numberOrNull(row.workout_volume_lbs),
+      workout_names: (row.workout_names ?? []) as string[],
+      sent_at: row.sent_at as Date | null,
+    };
+  });
 
   if (existing?.sent_at) {
     console.log(`Assessment for ${assessmentDate} already sent; nothing to do.`);
@@ -140,13 +169,17 @@ export async function runDailyAssessment(
   // paying for the LLM again.
   if (existing) {
     console.log(`Reusing stored assessment for ${assessmentDate}; retrying send.`);
-    await sendAndRecord(supabase, userId, assessmentDate, toEmailData(existing, assessmentDate));
+    await sendAndRecord(userId, assessmentDate, toEmailData(existing, assessmentDate));
     return { status: "resent", assessmentDate, grade: existing.grade };
   }
 
-  await syncHevyWorkoutsFor(supabase, userId);
+  // Each phase gets its own short transaction rather than one spanning
+  // the whole run. The Hevy, Gmail and Azure OpenAI calls in between are
+  // network round trips, and a transaction held open across all of them
+  // would occupy a connection for the length of the job.
+  await withJob(userId, (tx) => syncHevyWorkoutsFor(tx, userId));
 
-  const loseItResult = await importLoseItFor(supabase, userId);
+  const loseItResult = await withJob(userId, (tx) => importLoseItFor(tx, userId));
   if (!loseItResult.ok) {
     // Don't fail the whole day over a nutrition import problem — the
     // assessment still goes out, honestly reporting the gap.
@@ -156,39 +189,63 @@ export async function runDailyAssessment(
   // `yesterday_date` and `yesterday_workout_names` are labeling data only —
   // they must never reach the LLM (F-004: numeric fields only), so both are
   // stripped before generateAssessment, exactly as the UI path does.
-  const { yesterday_date, yesterday_workout_names, ...input } =
-    await assembleAssessmentInput(supabase, userId);
+  const { yesterday_date, yesterday_workout_names, ...input } = await withJob(
+    userId,
+    (tx) => assembleAssessmentInput(tx, userId),
+  );
 
   const { short_assessment, grade, model } = await generateAssessment(input);
 
-  const { error: writeError } = await supabase.from("daily_assessments").upsert(
-    {
-      user_id: userId,
-      assessment_date: yesterday_date,
-      weight_lbs_start: input.weight_lbs_start,
-      weight_lbs_goal: input.weight_lbs_goal,
-      weight_lbs_current: input.weight_lbs_current,
-      calories: input.yesterday_calories,
-      protein_g: input.yesterday_protein_g,
-      workout_present: input.yesterday_workout_present === 1,
-      workout_volume_lbs: input.yesterday_workout_volume_lbs,
-      workout_names: yesterday_workout_names,
-      short_assessment,
-      grade,
-      model,
-      sent_at: null,
-    },
-    { onConflict: "user_id,assessment_date" },
-  );
-
-  if (writeError) {
-    throw new Error(`Could not save assessment: ${writeError.message}`);
+  try {
+    await withJob(userId, (tx) =>
+      tx.query(
+        `insert into daily_assessments (
+           user_id, assessment_date, weight_lbs_start, weight_lbs_goal,
+           weight_lbs_current, calories, protein_g, workout_present,
+           workout_volume_lbs, workout_names, short_assessment, grade,
+           model, sent_at
+         )
+         values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, null)
+         on conflict (user_id, assessment_date) do update set
+           weight_lbs_start   = excluded.weight_lbs_start,
+           weight_lbs_goal    = excluded.weight_lbs_goal,
+           weight_lbs_current = excluded.weight_lbs_current,
+           calories           = excluded.calories,
+           protein_g          = excluded.protein_g,
+           workout_present    = excluded.workout_present,
+           workout_volume_lbs = excluded.workout_volume_lbs,
+           workout_names      = excluded.workout_names,
+           short_assessment   = excluded.short_assessment,
+           grade              = excluded.grade,
+           model              = excluded.model,
+           sent_at            = null`,
+        [
+          userId,
+          yesterday_date,
+          input.weight_lbs_start,
+          input.weight_lbs_goal,
+          input.weight_lbs_current,
+          input.yesterday_calories,
+          input.yesterday_protein_g,
+          input.yesterday_workout_present === 1,
+          input.yesterday_workout_volume_lbs,
+          yesterday_workout_names,
+          short_assessment,
+          grade,
+          model,
+        ],
+      ),
+    );
+  } catch (error) {
+    throw new Error(
+      `Could not save assessment: ${error instanceof Error ? error.message : String(error)}`,
+    );
   }
 
   // Written before sending, on purpose. If the process dies between the
   // send and the `sent_at` stamp, the next run sends a duplicate — which is
   // the better failure than silently skipping a day.
-  await sendAndRecord(supabase, userId, yesterday_date, {
+  await sendAndRecord(userId, yesterday_date, {
     yesterdayDate: yesterday_date,
     input,
     yesterdayWorkoutNames: yesterday_workout_names,
